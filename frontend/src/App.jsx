@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, today, usd } from "./api.js";
+import { api, shrinkPhoto, today, usd } from "./api.js";
 
 const STATUSES = ["Ordered", "Assembled", "Delivered", "Installed", "Punch", "Closed"];
 const ENTRY_LINES = {
@@ -14,6 +14,16 @@ const ENTRY_LINES = {
   11: "Unexpected",
 };
 const SUBTOTALS = new Set([3, 13, 15]);
+const counted = (e) => e.status === "approved" || e.status === "paid";
+const STATUS_LABEL = { submitted: "Waiting", approved: "Approved", paid: "Paid", rejected: "Rejected" };
+
+function StatusPill({ entry }) {
+  return (
+    <span className={`pill status-${entry.status}`} title={entry.status_note || undefined}>
+      {STATUS_LABEL[entry.status]}{entry.status === "rejected" && entry.status_note ? `: ${entry.status_note}` : ""}
+    </span>
+  );
+}
 
 function useHash() {
   const [hash, setHash] = useState(location.hash.slice(1) || "/");
@@ -50,7 +60,7 @@ function useSubmit(fn) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const submit = async (e) => {
-    e?.preventDefault();
+    e?.preventDefault?.();
     setBusy(true);
     setError(null);
     try {
@@ -74,17 +84,23 @@ export default function App() {
 
   const owner = me.role === "owner";
   const logout = () => api("/logout", { method: "POST" }).then(() => setMe(null));
-  const nav = owner
-    ? [["/", "Jobs"], ["/hours", "Log hours"], ["/team", "Team"]]
-    : me.role === "crew" ? [["/", "My hours"]] : [];
+  const nav = {
+    owner: [["/", "Jobs"], ["/hours", "Hours"], ["/assembly", "Assembly"], ["/approvals", "Approvals"], ["/team", "Team"]],
+    crew: [["/", "Hours"], ["/assembly", "Assembly"], ["/reimbursements", "Reimbursements"]],
+    designer: [["/", "Reimbursements"]],
+  }[me.role] || [];
 
   let page;
   const jobMatch = hash.match(/^\/jobs\/(\d+)$/);
-  if (!owner && me.role !== "crew") page = <p className="card">Your screens are coming soon.</p>;
+  if (me.role === "designer") page = <Reimbursements />;
+  else if (me.role !== "owner" && me.role !== "crew") page = <p className="card">Your screens are coming soon.</p>;
+  else if (hash === "/assembly") page = <Assembly me={me} />;
+  else if (hash === "/reimbursements" && !owner) page = <Reimbursements />;
   else if (!owner) page = <LogHours me={me} />;
   else if (jobMatch) page = <JobDetail id={jobMatch[1]} />;
   else if (hash === "/new") page = <NewJob />;
   else if (hash === "/hours") page = <LogHours me={me} />;
+  else if (hash === "/approvals") page = <Approvals />;
   else if (hash === "/team") page = <Team />;
   else page = <JobsList />;
 
@@ -244,6 +260,8 @@ function JobDetail({ id }) {
   const entriesFor = (n) => [
     ...job.ledger.filter((e) => e.line === n).map((e) => ({ ...e, kind: "ledger" })),
     ...(n === 6 ? job.labor.map((e) => ({ id: `l${e.id}`, laborId: e.id, amount: e.total, payee: e.worker, note: `${e.hours} h × ${usd(e.rate)}`, entry_date: e.work_date, kind: "labor" })) : []),
+    ...(n === 5 ? job.assembly.filter(counted).map((e) => ({ id: `a${e.id}`, amount: e.total, payee: e.worker, note: `${e.boxes} boxes, ${e.modifications} mods${e.note ? ` · ${e.note}` : ""}`, entry_date: e.work_date })) : []),
+    ...(n === 4 ? job.reimbursements.filter(counted).map((r) => ({ id: `r${r.id}`, amount: r.amount, payee: r.user, note: `Reimbursement · ${r.purpose}`, entry_date: r.spent_on })) : []),
   ];
 
   return (
@@ -287,7 +305,7 @@ function JobDetail({ id }) {
                     <td>{e.entry_date} · {e.payee || ""} {e.note && <span className="muted">{e.note}</span>}</td>
                     <td className="amount">
                       {usd(e.amount)}{" "}
-                      <button className="link" onClick={() => remove(e)} aria-label="Delete entry">✕</button>
+                      {e.kind && <button className="link" onClick={() => remove(e)} aria-label="Delete entry">✕</button>}
                     </td>
                   </tr>
                 )),
@@ -513,6 +531,252 @@ function Team() {
         <ErrorText error={addError} />
         <button disabled={busy}>Add login</button>
       </form>
+    </>
+  );
+}
+
+function Assembly({ me }) {
+  const owner = me.role === "owner";
+  const [jobs] = useLoad("/job-names");
+  const [users] = useLoad(owner ? "/users" : "/me");
+  const [mine, , reloadMine] = useLoad("/assembly/mine");
+  const crew = owner ? (users || []).filter((u) => u.role === "crew" && u.active) : [];
+  const blank = { job_id: "", boxes: "", modifications: "", extra_cost: "", note: "", work_date: today(), worker_id: "" };
+  const [form, setForm] = useState(blank);
+  const [done, setDone] = useState(null);
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  const job = jobs?.find((j) => String(j.id) === form.job_id);
+  const [submit, busy, error] = useSubmit(async () => {
+    const body = {
+      job_id: Number(form.job_id), boxes: Number(form.boxes || 0), modifications: Number(form.modifications || 0),
+      extra_cost: form.extra_cost || 0, note: form.note || null, work_date: form.work_date,
+    };
+    if (owner) body.worker_id = Number(form.worker_id);
+    const saved = await api("/assembly", { method: "POST", body });
+    setDone(owner ? `Logged ${usd(saved.total)} on ${saved.job}` : `Sent for approval: ${saved.boxes} boxes on ${saved.job}`);
+    setForm({ ...blank, worker_id: form.worker_id });
+    reloadMine();
+  });
+  const [remove, , removeError] = useSubmit(async (id) => {
+    if (confirm("Delete this entry?")) {
+      await api(`/assembly/${id}`, { method: "DELETE" });
+      reloadMine();
+    }
+  });
+
+  return (
+    <>
+      <form className="card" onSubmit={submit}>
+        <h1>Log assembly</h1>
+        <div className="grid">
+          {owner && (
+            <Field label="Who built it">
+              <select value={form.worker_id} onChange={set("worker_id")} required>
+                <option value="">Pick a person</option>
+                {crew.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+            </Field>
+          )}
+          <Field label="Job">
+            <select value={form.job_id} onChange={set("job_id")} required>
+              <option value="">Pick a job</option>
+              {jobs?.map((j) => <option key={j.id} value={j.id}>{j.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Date"><input type="date" value={form.work_date} max={today()} onChange={set("work_date")} required /></Field>
+          <Field label="Boxes built"><input type="number" inputMode="numeric" min="0" value={form.boxes} onChange={set("boxes")} /></Field>
+          <Field label="Modifications"><input type="number" inputMode="numeric" min="0" value={form.modifications} onChange={set("modifications")} /></Field>
+          <Field label="Extra modification cost ($)"><input type="number" inputMode="decimal" step="0.01" min="0" value={form.extra_cost} onChange={set("extra_cost")} /></Field>
+          <Field label={form.extra_cost ? "What was the extra cost for? (required)" : "Note"}>
+            <input value={form.note} onChange={set("note")} required={!!Number(form.extra_cost)} />
+          </Field>
+        </div>
+        {job && (job.boxes > 0 || job.modifications > 0) && (
+          <p className="muted">Order calls for {job.boxes} boxes and {job.modifications} modifications.</p>
+        )}
+        <ErrorText error={error} />
+        {done && <p className="ok" role="status">{done}</p>}
+        <button disabled={busy}>{owner ? "Save" : "Send for approval"}</button>
+      </form>
+      {mine?.length > 0 && (
+        <section className="card">
+          <h2>{owner ? "Assembly you logged for yourself" : "My assembly"}</h2>
+          <ErrorText error={removeError} />
+          <ul className="list">
+            {mine.map((e) => (
+              <li key={e.id} className="entry-row">
+                <div className="row between">
+                  <span>{e.work_date} · {e.job}</span>
+                  <StatusPill entry={e} />
+                </div>
+                <div className="row between muted">
+                  <span>{e.boxes} boxes · {e.modifications} mods{Number(e.extra_cost) ? ` · +${usd(e.extra_cost)}` : ""}</span>
+                  <span>
+                    {usd(e.total)}
+                    {e.status === "submitted" && <button className="link" onClick={() => remove(e.id)}>Delete</button>}
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </>
+  );
+}
+
+function Reimbursements() {
+  const [jobs] = useLoad("/job-names");
+  const [mine, , reload] = useLoad("/reimbursements/mine");
+  const blank = { amount: "", purpose: "", job_id: "", spent_on: today() };
+  const [form, setForm] = useState(blank);
+  const [file, setFile] = useState(null);
+  const [fileKey, setFileKey] = useState(0);
+  const [done, setDone] = useState(null);
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  const [submit, busy, error] = useSubmit(async () => {
+    const data = new FormData();
+    for (const [k, v] of Object.entries(form)) if (v !== "") data.append(k, v);
+    data.append("receipt", await shrinkPhoto(file));
+    const saved = await api("/reimbursements", { method: "POST", body: data });
+    setDone(`Sent for approval: ${usd(saved.amount)} for ${saved.purpose}`);
+    setForm(blank);
+    setFile(null);
+    setFileKey((k) => k + 1); // clears the file input
+    reload();
+  });
+  const [remove, , removeError] = useSubmit(async (id) => {
+    if (confirm("Delete this reimbursement?")) {
+      await api(`/reimbursements/${id}`, { method: "DELETE" });
+      reload();
+    }
+  });
+  const sum = (status) => (mine || []).filter((r) => r.status === status).reduce((s, r) => s + Number(r.amount), 0);
+
+  return (
+    <>
+      <form className="card" onSubmit={submit}>
+        <h1>Get reimbursed</h1>
+        <div className="grid">
+          <Field label="Amount ($)"><input type="number" inputMode="decimal" step="0.01" min="0.01" value={form.amount} onChange={set("amount")} required /></Field>
+          <Field label="What was it for?"><input value={form.purpose} onChange={set("purpose")} placeholder="Fuel, Home Depot fillers…" required /></Field>
+          <Field label="Job">
+            <select value={form.job_id} onChange={set("job_id")}>
+              <option value="">No job (fuel, shop supplies)</option>
+              {jobs?.map((j) => <option key={j.id} value={j.id}>{j.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Date"><input type="date" value={form.spent_on} max={today()} onChange={set("spent_on")} required /></Field>
+          <Field label="Receipt photo">
+            <input key={fileKey} type="file" accept="image/*,application/pdf" onChange={(e) => setFile(e.target.files[0] || null)} required />
+          </Field>
+        </div>
+        <ErrorText error={error} />
+        {done && <p className="ok" role="status">{done}</p>}
+        <button disabled={busy}>{busy ? "Sending…" : "Send for approval"}</button>
+      </form>
+      <section className="card">
+        <div className="row between">
+          <h2>My reimbursements</h2>
+          <span className="muted">Waiting {usd(sum("submitted"))} · Owed {usd(sum("approved"))}</span>
+        </div>
+        <ErrorText error={removeError} />
+        {mine?.length === 0 && <p className="muted">None yet.</p>}
+        <ul className="list">
+          {mine?.map((r) => (
+            <li key={r.id} className="entry-row">
+              <div className="row between">
+                <span>{r.spent_on} · {r.purpose}</span>
+                <StatusPill entry={r} />
+              </div>
+              <div className="row between muted">
+                <span>{r.job || "No job"} · <a href={r.receipt_url} target="_blank" rel="noreferrer">Receipt</a></span>
+                <span>
+                  {usd(r.amount)}
+                  {r.status === "submitted" && <button className="link" onClick={() => remove(r.id)}>Delete</button>}
+                </span>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </section>
+    </>
+  );
+}
+
+function Approvals() {
+  const [data, error, reload] = useLoad("/approvals");
+  const [act, busy, actError] = useSubmit(async ([kind, item, status]) => {
+    let note = null;
+    if (status === "rejected") {
+      note = prompt("Reason (they'll see this)");
+      if (note === null) return;
+    }
+    await api(`/${kind}/${item.id}/status`, { method: "POST", body: { status, note } });
+    reload();
+  });
+  if (error) return <ErrorText error={error} />;
+  if (!data) return <p className="muted">Loading…</p>;
+
+  const items = [
+    ...data.assembly.map((e) => ({ ...e, kind: "assembly", who: e.worker, amount: e.total, date: e.work_date, what: `Assembly · ${e.boxes} boxes, ${e.modifications} mods${e.note ? ` · ${e.note}` : ""}` })),
+    ...data.reimbursements.map((r) => ({ ...r, kind: "reimbursements", who: r.user, date: r.spent_on, what: `Reimbursement · ${r.purpose}`, job: r.job || "No job" })),
+  ];
+  const waiting = items.filter((i) => i.status === "submitted");
+  const owedBy = {}; // not Object.groupBy: crew phones may run older Safari
+  for (const i of items.filter((i) => i.status === "approved")) (owedBy[i.who] ||= []).push(i);
+  const owed = Object.entries(owedBy);
+
+  const row = (i, buttons) => (
+    <li key={`${i.kind}${i.id}`} className="entry-row">
+      <div className="row between">
+        <strong>{i.who}</strong>
+        <span>{usd(i.amount)}</span>
+      </div>
+      <div className="muted">{i.date} · {i.job} · {i.what}</div>
+      <div className="row">
+        {i.receipt_url && <a href={i.receipt_url} target="_blank" rel="noreferrer">View receipt</a>}
+        {buttons}
+      </div>
+    </li>
+  );
+
+  return (
+    <>
+      <h1>Approvals</h1>
+      <ErrorText error={actError} />
+      <section className="card">
+        <h2>Waiting for you ({waiting.length})</h2>
+        {waiting.length === 0 && <p className="muted">Nothing waiting.</p>}
+        <ul className="list">
+          {waiting.map((i) => row(i, (
+            <>
+              <button disabled={busy} onClick={() => act([i.kind, i, "approved"])}>Approve</button>
+              <button disabled={busy} className="secondary" onClick={() => act([i.kind, i, "rejected"])}>Reject</button>
+            </>
+          )))}
+        </ul>
+      </section>
+      <section className="card">
+        <h2>Approved, not paid yet</h2>
+        {owed.length === 0 && <p className="muted">Everyone's paid up.</p>}
+        {owed.map(([who, list]) => (
+          <div key={who}>
+            <div className="row between owed-head">
+              <strong>{who}</strong>
+              <span>{usd(list.reduce((s, i) => s + Number(i.amount), 0))}</span>
+            </div>
+            <ul className="list">
+              {list.map((i) => row(i, (
+                <>
+                  <button disabled={busy} onClick={() => act([i.kind, i, "paid"])}>Mark paid</button>
+                  <button disabled={busy} className="link" onClick={() => act([i.kind, i, "submitted"])}>Undo approval</button>
+                </>
+              )))}
+            </ul>
+          </div>
+        ))}
+      </section>
     </>
   );
 }

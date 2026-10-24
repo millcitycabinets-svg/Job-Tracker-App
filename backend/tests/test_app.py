@@ -90,7 +90,7 @@ def test_crew_logs_own_hours_without_seeing_dollars():
     assert not any(k in mine[0] for k in ("rate", "total"))
     # worker_id from crew is ignored: the entry is Omar's, at Omar's rate
     assert line(owner.get(f"/api/jobs/{jid}").json(), 6) == "520.00"
-    assert omar.get("/api/job-names").json() == [{"id": jid, "name": "Dustin Selden"}]
+    assert omar.get("/api/job-names").json() == [{"id": jid, "name": "Dustin Selden", "boxes": 30, "modifications": 2}]
 
 
 def test_crew_privacy():
@@ -157,3 +157,63 @@ def test_bad_login_and_duplicate_job():
     owner = client("skyler@x.com", "ownerpass")
     make_job(owner)
     assert owner.post("/api/jobs", json={"name": "Dustin Selden"}).status_code == 409
+
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 100
+
+
+def submit_receipt(c, **fields):
+    data = {"amount": "180", "purpose": "Home Depot fillers", **{k: str(v) for k, v in fields.items()}}
+    return c.post("/api/reimbursements", data=data, files={"receipt": ("r.png", PNG, "image/png")})
+
+
+def test_assembly_counts_only_after_approval():
+    owner = client("skyler@x.com", "ownerpass")
+    jid = make_job(owner)["id"]
+    omar = client("omar@x.com", "omarpass")
+    r = omar.post("/api/assembly", json={"job_id": jid, "boxes": 30, "modifications": 2})
+    assert r.status_code == 200 and r.json()["total"] == "700.00" and r.json()["status"] == "submitted"
+    assert omar.post("/api/assembly", json={"job_id": jid, "extra_cost": "40"}).status_code == 422  # needs a note
+    assert line(owner.get(f"/api/jobs/{jid}").json(), 5) == "0.00"
+    eid = r.json()["id"]
+    assert owner.post(f"/api/assembly/{eid}/status", json={"status": "approved"}).status_code == 200
+    assert line(owner.get(f"/api/jobs/{jid}").json(), 5) == "700.00"
+    assert omar.delete(f"/api/assembly/{eid}").status_code == 403  # approved entries are locked for crew
+    paid = owner.post(f"/api/assembly/{eid}/status", json={"status": "paid"}).json()
+    assert paid["status"] == "paid"
+    assert owner.post(f"/api/assembly/{eid}/status", json={"status": "rejected"}).status_code == 422
+    assert omar.get("/api/assembly/mine").json()[0]["status"] == "paid"
+    assert client("jorge@x.com", "jorgepass").get("/api/assembly/mine").json() == []
+
+
+def test_reimbursement_flow_and_privacy():
+    owner = client("skyler@x.com", "ownerpass")
+    jid = make_job(owner)["id"]
+    omar = client("omar@x.com", "omarpass")
+    job_r = submit_receipt(omar, job_id=jid).json()
+    fuel = submit_receipt(omar, amount="62.40", purpose="Fuel, Circle K").json()
+    assert fuel["job"] is None
+    bad = omar.post("/api/reimbursements", data={"amount": "5", "purpose": "x"},
+                    files={"receipt": ("r.txt", b"hi", "text/plain")})
+    assert bad.status_code == 422
+    assert omar.post("/api/reimbursements", data={"amount": "5", "purpose": "x"}).status_code == 422  # receipt required
+
+    jorge = client("jorge@x.com", "jorgepass")
+    assert jorge.get("/api/reimbursements/mine").json() == []
+    assert jorge.get(job_r["receipt_url"]).status_code == 404
+    assert jorge.get("/api/approvals").status_code == 403
+    got = omar.get(job_r["receipt_url"])
+    assert got.status_code == 200 and got.content == PNG
+
+    assert line(owner.get(f"/api/jobs/{jid}").json(), 4) == "12000.00"
+    approvals = owner.get("/api/approvals").json()
+    assert {x["id"] for x in approvals["reimbursements"]} == {job_r["id"], fuel["id"]}
+    owner.post(f"/api/reimbursements/{job_r['id']}/status", json={"status": "approved"})
+    owner.post(f"/api/reimbursements/{fuel['id']}/status", json={"status": "approved"})
+    assert line(owner.get(f"/api/jobs/{jid}").json(), 4) == "12180.00"  # fuel hits no job
+    owner.post(f"/api/reimbursements/{job_r['id']}/status", json={"status": "paid"})
+    mine = {x["id"]: x for x in omar.get("/api/reimbursements/mine").json()}
+    assert mine[job_r["id"]]["status"] == "paid" and mine[job_r["id"]]["paid_at"]
+    assert [x["id"] for x in owner.get("/api/approvals").json()["reimbursements"]] == [fuel["id"]]
+    log = owner.get("/api/audit?table=reimbursements").json()
+    assert all("PNG" not in str(a["changes"]) for a in log)

@@ -4,8 +4,8 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -15,8 +15,9 @@ from starlette.middleware.sessions import SessionMiddleware
 from . import audit  # noqa: F401  (registers the audit listener)
 from .auth import check_password, current_user, hash_password, owner_only, require
 from .db import Base, engine, get_db
-from .models import JOB_STATUSES, LEDGER_LINES, ROLES, AuditLog, Job, LaborEntry, LedgerEntry, User
-from .waterfall import compute, labor_total
+from .models import (BOX_RATE, JOB_STATUSES, LEDGER_LINES, MOD_RATE, ROLES, TRANSITIONS, AssemblyEntry, AuditLog, Job,
+                     LaborEntry, LedgerEntry, Reimbursement, User)
+from .waterfall import compute, labor_total, money
 
 CREW_EDIT_WINDOW = timedelta(days=3)
 
@@ -189,7 +190,9 @@ def check_job_fields(db: Session, data: dict, job_id: int | None = None):
 def load_job(db: Session, job_id: int) -> Job:
     job = db.scalar(
         select(Job).where(Job.id == job_id)
-        .options(selectinload(Job.ledger), selectinload(Job.labor).selectinload(LaborEntry.worker), selectinload(Job.rep))
+        .options(selectinload(Job.ledger), selectinload(Job.labor).selectinload(LaborEntry.worker), selectinload(Job.rep),
+                 selectinload(Job.assembly).selectinload(AssemblyEntry.worker),
+                 selectinload(Job.reimbursements).selectinload(Reimbursement.user))
     )
     if not job:
         raise HTTPException(404, "Job not found")
@@ -220,13 +223,16 @@ def job_out(job: Job):
             {"id": e.id, "worker": e.worker.name, "work_date": e.work_date, "hours": str(e.hours),
              "rate": str(e.rate), "total": str(labor_total(e))} for e in job.labor
         ],
+        "assembly": [assembly_out(e) for e in job.assembly],
+        "reimbursements": [reimbursement_out(r) for r in job.reimbursements],
     }
 
 
 @app.get("/api/jobs")
 def list_jobs(status: str | None = None, rep_id: int | None = None, db: Session = Depends(get_db),
               _=Depends(owner_only)):
-    q = select(Job).options(selectinload(Job.ledger), selectinload(Job.labor), selectinload(Job.rep))
+    q = select(Job).options(selectinload(Job.ledger), selectinload(Job.labor), selectinload(Job.rep),
+                            selectinload(Job.assembly), selectinload(Job.reimbursements))
     if status:
         q = q.where(Job.status == status)
     if rep_id:
@@ -333,7 +339,7 @@ def delete_ledger(entry_id: int, db: Session = Depends(get_db), _=Depends(owner_
 @app.get("/api/job-names")
 def job_names(db: Session = Depends(get_db), _=Depends(current_user)):
     jobs = db.scalars(select(Job).where(Job.status != "Closed").order_by(Job.name))
-    return [{"id": j.id, "name": j.name} for j in jobs]
+    return [{"id": j.id, "name": j.name, "boxes": j.boxes, "modifications": j.modifications} for j in jobs]
 
 
 # ---------- labor (crew logs their own; owner logs anyone's) ----------
@@ -417,6 +423,165 @@ def delete_labor(entry_id: int, db: Session = Depends(get_db), user: User = Depe
     db.delete(labor_for_edit(db, entry_id, user))
     db.commit()
     return {"ok": True}
+
+
+# ---------- assembly (crew submits, owner approves) ----------
+
+class AssemblyIn(BaseModel):
+    job_id: int
+    boxes: int = Field(default=0, ge=0)
+    modifications: int = Field(default=0, ge=0)
+    extra_cost: Decimal = Field(default=Decimal(0), ge=0)
+    note: str | None = None
+    work_date: date | None = None
+    worker_id: int | None = None  # owner only
+
+
+def assembly_out(e: AssemblyEntry):
+    return {"id": e.id, "job_id": e.job_id, "job": e.job.name, "worker": e.worker.name, "work_date": e.work_date,
+            "boxes": e.boxes, "modifications": e.modifications, "extra_cost": str(e.extra_cost), "note": e.note,
+            "total": str(money(e.total)), "status": e.status, "status_note": e.status_note}
+
+
+@app.post("/api/assembly")
+def add_assembly(body: AssemblyIn, db: Session = Depends(get_db), user: User = Depends(require("owner", "crew"))):
+    open_job(db, body.job_id)
+    if not (body.boxes or body.modifications or body.extra_cost):
+        raise HTTPException(422, "Enter boxes, modifications or an extra cost")
+    if body.extra_cost and not (body.note or "").strip():
+        raise HTTPException(422, "Say what the extra cost was for")
+    worker = user
+    if user.role == "owner":
+        if not body.worker_id:
+            raise HTTPException(422, "Pick who did the assembly")
+        worker = get_or_404(db, User, body.worker_id)
+    e = AssemblyEntry(job_id=body.job_id, worker_id=worker.id, work_date=body.work_date or date.today(),
+                      boxes=body.boxes, modifications=body.modifications, extra_cost=body.extra_cost, note=body.note,
+                      box_rate=BOX_RATE, mod_rate=MOD_RATE,
+                      status="approved" if user.role == "owner" else "submitted")
+    db.add(e)
+    db.commit()
+    return assembly_out(e)
+
+
+@app.get("/api/assembly/mine")
+def my_assembly(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    q = select(AssemblyEntry).where(AssemblyEntry.worker_id == user.id).order_by(AssemblyEntry.id.desc())
+    return [assembly_out(e) for e in db.scalars(q)]
+
+
+@app.delete("/api/assembly/{entry_id}")
+def delete_assembly(entry_id: int, db: Session = Depends(get_db), user: User = Depends(require("owner", "crew"))):
+    e = get_or_404(db, AssemblyEntry, entry_id)
+    if user.role != "owner" and (e.worker_id != user.id or e.status != "submitted"):
+        raise HTTPException(403, "Only entries waiting for approval can be deleted")
+    db.delete(e)
+    db.commit()
+    return {"ok": True}
+
+
+# ---------- reimbursements (anyone but reps submits with a receipt; owner approves and pays) ----------
+
+MAX_RECEIPT_BYTES = 10 * 1024 * 1024
+
+
+def reimbursement_out(r: Reimbursement):
+    return {"id": r.id, "user": r.user.name, "amount": str(r.amount), "purpose": r.purpose, "job_id": r.job_id,
+            "job": r.job.name if r.job else None, "spent_on": r.spent_on, "status": r.status,
+            "status_note": r.status_note, "paid_at": r.paid_at, "receipt_url": f"/api/reimbursements/{r.id}/receipt"}
+
+
+@app.post("/api/reimbursements")
+async def add_reimbursement(
+    amount: Decimal = Form(gt=0, le=100000),
+    purpose: str = Form(min_length=1),
+    job_id: int | None = Form(default=None),
+    spent_on: date | None = Form(default=None),
+    receipt: UploadFile = File(),
+    db: Session = Depends(get_db),
+    user: User = Depends(require("owner", "crew", "designer")),
+):
+    if job_id:
+        get_or_404(db, Job, job_id)
+    kind = receipt.content_type or ""
+    if not (kind.startswith("image/") or kind == "application/pdf"):
+        raise HTTPException(422, "Receipt must be a photo or PDF")
+    data = await receipt.read(MAX_RECEIPT_BYTES + 1)
+    if not data or len(data) > MAX_RECEIPT_BYTES:
+        raise HTTPException(422, "Receipt must be under 10 MB")
+    r = Reimbursement(user_id=user.id, amount=amount, purpose=purpose.strip(), job_id=job_id or None,
+                      spent_on=spent_on or date.today(), receipt=data, receipt_type=kind)
+    db.add(r)
+    db.commit()
+    return reimbursement_out(r)
+
+
+@app.get("/api/reimbursements/mine")
+def my_reimbursements(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    q = select(Reimbursement).where(Reimbursement.user_id == user.id).order_by(Reimbursement.id.desc())
+    return [reimbursement_out(r) for r in db.scalars(q)]
+
+
+def own_or_owner(r: Reimbursement, user: User):
+    if user.role != "owner" and r.user_id != user.id:
+        raise HTTPException(404, "Reimbursement not found")
+
+
+@app.get("/api/reimbursements/{rid}/receipt")
+def receipt(rid: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    r = get_or_404(db, Reimbursement, rid)
+    own_or_owner(r, user)
+    return Response(r.receipt, media_type=r.receipt_type, headers={"Cache-Control": "private, max-age=3600"})
+
+
+@app.delete("/api/reimbursements/{rid}")
+def delete_reimbursement(rid: int, db: Session = Depends(get_db), user: User = Depends(current_user)):
+    r = get_or_404(db, Reimbursement, rid)
+    own_or_owner(r, user)
+    if user.role != "owner" and r.status != "submitted":
+        raise HTTPException(403, "Only reimbursements waiting for approval can be deleted")
+    db.delete(r)
+    db.commit()
+    return {"ok": True}
+
+
+# ---------- approvals (owner) ----------
+
+class StatusIn(BaseModel):
+    status: str
+    note: str | None = None
+
+
+def set_status(obj, body: StatusIn):
+    if body.status not in TRANSITIONS.get(obj.status, ()):
+        raise HTTPException(422, f"Can't go from {obj.status} to {body.status}")
+    obj.status = body.status
+    obj.status_note = body.note
+    obj.paid_at = datetime.now(timezone.utc) if body.status == "paid" else None
+
+
+@app.get("/api/approvals")
+def approvals(db: Session = Depends(get_db), _=Depends(owner_only)):
+    open_statuses = ("submitted", "approved")
+    a = db.scalars(select(AssemblyEntry).where(AssemblyEntry.status.in_(open_statuses)).order_by(AssemblyEntry.id))
+    r = db.scalars(select(Reimbursement).where(Reimbursement.status.in_(open_statuses)).order_by(Reimbursement.id))
+    return {"assembly": [assembly_out(e) for e in a], "reimbursements": [reimbursement_out(x) for x in r]}
+
+
+@app.post("/api/assembly/{entry_id}/status")
+def assembly_status(entry_id: int, body: StatusIn, db: Session = Depends(get_db), _=Depends(owner_only)):
+    e = get_or_404(db, AssemblyEntry, entry_id)
+    set_status(e, body)
+    db.commit()
+    return assembly_out(e)
+
+
+@app.post("/api/reimbursements/{rid}/status")
+def reimbursement_status(rid: int, body: StatusIn, db: Session = Depends(get_db), _=Depends(owner_only)):
+    r = get_or_404(db, Reimbursement, rid)
+    set_status(r, body)
+    db.commit()
+    return reimbursement_out(r)
 
 
 # ---------- audit (owner) ----------

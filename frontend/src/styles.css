@@ -81,3 +81,12 @@ button.link { background: none; color: var(--accent); padding: 0.25rem; min-heig
 .waterfall .subtotal td { font-weight: 600; border-top: 2px solid var(--ink); }
 .waterfall .entry td { font-size: 0.85rem; background: var(--bg); }
 .entry-row { border-bottom: 1px solid var(--line); padding: 0.5rem 0; }
+.status-submitted { color: var(--warn); }
+.status-approved { color: var(--accent); }
+.status-rejected { color: var(--error); }
+.owed-head { margin-top: 0.75rem; padding-bottom: 0.25rem; border-bottom: 2px solid var(--line); }
+.top nav { overflow-x: auto; }
+@media (max-width: 600px) {
+  .top nav { order: 3; flex-basis: 100%; }
+  .top .link { margin-left: auto; }
+}

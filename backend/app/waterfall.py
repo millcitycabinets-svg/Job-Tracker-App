@@ -2,6 +2,8 @@
 
 from decimal import ROUND_HALF_UP, Decimal
 
+from .models import COUNTED
+
 LINES = {
     1: "Original contract",
     2: "Change orders",
@@ -37,6 +39,13 @@ def compute(job) -> dict:
         by_line[e.line] += e.amount
     for e in job.labor:
         by_line[6] += labor_total(e)
+    for e in job.assembly:
+        if e.status in COUNTED:
+            by_line[5] += e.total
+    for r in job.reimbursements:
+        if r.status in COUNTED:
+            # shortcut: job reimbursements always land on materials; add a line picker if other kinds show up
+            by_line[4] += r.amount
 
     by_line[1] = job.invoice_total or Decimal(0)
     by_line[3] = by_line[1] + by_line[2]

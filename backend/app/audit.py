@@ -15,6 +15,8 @@ SECRET_FIELDS = {"password_hash"}
 
 
 def _plain(value):
+    if isinstance(value, bytes):
+        return f"<file, {len(value)} bytes>"
     if isinstance(value, (Decimal, date, datetime)):
         return str(value)
     return value

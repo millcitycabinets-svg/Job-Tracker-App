@@ -2,12 +2,13 @@
 
 Job profitability, crew hours and collections for Mill City Cabinetry. Spec: `docs/JOB_TRACKER_SPEC.md`.
 
-## What works now (phase 1)
+## What works now
 
 - Personal logins with roles: owner, crew, designer, rep. Sessions last 30 days.
 - Owner: jobs, the 15-line profit waterfall, costs and change orders per line, team logins and pay rates.
 - Crew: log their own hours against a job picked from a list; see only their own hours, never dollars. Entries lock after 3 days.
 - Pay rates are copied onto each hours entry, so a rate change never rewrites past jobs.
+- Crew log assembly (boxes, modifications, extra cost) and submit reimbursements with a receipt photo; owner approves, rejects with a reason, and marks paid. Only approved entries count on a job. Fuel and other no-job reimbursements hit no job.
 - Every create, edit and delete is recorded in an audit log (who, when, old and new value).
 
 ## Run locally
