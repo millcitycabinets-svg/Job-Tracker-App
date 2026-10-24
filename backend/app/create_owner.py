@@ -5,13 +5,14 @@ import sys
 from sqlalchemy import select
 
 from .auth import hash_password
-from .db import Base, SessionLocal, engine
+from . import migrate
+from .db import SessionLocal
 from .models import User
 
 if __name__ == "__main__":
     name, email, password = sys.argv[1:4]
     assert len(password) >= 8, "password must be at least 8 characters"
-    Base.metadata.create_all(engine)
+    migrate.upgrade()
     with SessionLocal() as db:
         email = email.strip().lower()
         if db.scalar(select(User).where(User.email == email)):

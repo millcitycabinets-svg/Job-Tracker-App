@@ -257,3 +257,78 @@ def test_login_locks_after_five_wrong_passwords():
         assert c.post("/api/login", json={"email": "omar@x.com", "password": "wrong"}).status_code == 401
     assert c.post("/api/login", json={"email": "omar@x.com", "password": "omarpass"}).status_code == 429
     assert c.post("/api/login", json={"email": "jorge@x.com", "password": "jorgepass"}).status_code == 200
+
+
+def test_payments_balance_fees_and_collections():
+    owner = client("skyler@x.com", "ownerpass")
+    jid = make_job(owner)["id"]
+    r = owner.post(f"/api/jobs/{jid}/payments", data={"amount": "15000", "method": "card", "payment_type": "deposit",
+                                                    "processing_fee": "435"},
+                   files={"screenshot": ("s.png", PNG, "image/png")})
+    assert r.status_code == 200, r.text
+    job = r.json()
+    assert job["waterfall"]["collected"] == "15000.00" and job["waterfall"]["balance_due"] == "15000.00"
+    assert line(job, 10) == "435.00"
+    assert owner.get(job["payments"][0]["screenshot_url"]).content == PNG
+    job = owner.post(f"/api/jobs/{jid}/payments", data={"amount": "15000", "method": "check", "status": "pending",
+                                                       "expected_date": "2026-11-03"}).json()
+    assert job["waterfall"]["balance_due"] == "15000.00"  # pending doesn't count yet
+    assert owner.post(f"/api/jobs/{jid}/payments", data={"amount": "1", "method": "venmo"}).status_code == 422
+
+    rep = owner.get("/api/collections?period=week").json()
+    assert rep["collected"] == [{"rep": "Drew", "amounts": ["0.00"] * 7 + ["15000.00"], "total": "15000.00"}]
+    assert rep["sold"][0]["amounts"][-1] == "30000.00"
+    assert [p["amount"] for p in rep["pending"]] == ["15000.00"]
+    assert rep["outstanding"][0]["balance_due"] == "15000.00"
+    assert rep["commission_due"] == []
+
+    pending_id = next(p["id"] for p in job["payments"] if p["status"] == "pending")
+    job = owner.patch(f"/api/payments/{pending_id}", json={"status": "received"}).json()
+    assert job["waterfall"]["balance_due"] == "0.00"
+    owner.patch(f"/api/jobs/{jid}", json={"status": "Closed"})
+    due = owner.get("/api/collections").json()["commission_due"]
+    # 30000 - 12000 materials - 435 card fee = 17565 profit; 30% = 5269.50
+    assert due == [{"job_id": jid, "job": "Dustin Selden", "rep": "Drew", "commission": "5269.50",
+                    "closed_at": due[0]["closed_at"]}]
+    owner.post(f"/api/jobs/{jid}/commission-paid", json={"paid": True})
+    assert owner.get("/api/collections").json()["commission_due"] == []
+    omar = client("omar@x.com", "omarpass")
+    assert omar.get("/api/collections").status_code == 403
+    assert omar.get(job["payments"][0]["screenshot_url"]).status_code == 403
+
+
+def test_week_buckets_run_sunday_to_saturday():
+    from datetime import date
+    from app.main import bucket_start, last_buckets
+    assert bucket_start(date(2026, 10, 24), "week") == date(2026, 10, 18)  # Saturday -> prior Sunday
+    assert bucket_start(date(2026, 10, 18), "week") == date(2026, 10, 18)  # Sunday is its own start
+    assert bucket_start(date(2026, 11, 15), "quarter") == date(2026, 10, 1)
+    assert last_buckets(date(2026, 1, 10), "month", 3) == [date(2025, 11, 1), date(2025, 12, 1), date(2026, 1, 1)]
+
+
+def test_migrations_match_models_and_adopt_old_databases():
+    from alembic import command
+    from alembic.config import Config
+    from sqlalchemy import inspect, text
+
+    from app.migrate import ALEMBIC_INI, upgrade
+
+    def reset():
+        Base.metadata.drop_all(engine)
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+
+    reset()
+    upgrade()  # fresh database: builds everything from migrations
+    command.check(Config(str(ALEMBIC_INI)))  # raises if models and migrations disagree
+
+    # A database made by create_all before migrations existed, missing the payments table and new column.
+    reset()
+    Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE payments"))
+        conn.execute(text("ALTER TABLE jobs DROP COLUMN commission_paid_at"))
+    upgrade()
+    assert "payments" in inspect(engine).get_table_names()
+    assert "commission_paid_at" in [c["name"] for c in inspect(engine).get_columns("jobs")]
+    reset()

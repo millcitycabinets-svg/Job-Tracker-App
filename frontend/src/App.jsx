@@ -85,7 +85,7 @@ export default function App() {
   const owner = me.role === "owner";
   const logout = () => api("/logout", { method: "POST" }).then(() => setMe(null));
   const nav = {
-    owner: [["/", "Jobs"], ["/hours", "Hours"], ["/assembly", "Assembly"], ["/designs", "Designs"], ["/approvals", "Approvals"], ["/team", "Team"]],
+    owner: [["/", "Jobs"], ["/hours", "Hours"], ["/assembly", "Assembly"], ["/collections", "Collections"], ["/designs", "Designs"], ["/approvals", "Approvals"], ["/team", "Team"]],
     crew: [["/", "Hours"], ["/assembly", "Assembly"], ["/reimbursements", "Reimbursements"]],
     designer: [["/", "My designs"], ["/reimbursements", "Reimbursements"]],
   }[me.role] || [];
@@ -102,6 +102,7 @@ export default function App() {
   else if (hash === "/hours") page = <LogHours me={me} />;
   else if (hash === "/approvals") page = <Approvals />;
   else if (hash === "/designs") page = <DesignPipeline />;
+  else if (hash === "/collections") page = <Collections />;
   else if (hash === "/team") page = <Team />;
   else page = <JobsList />;
 
@@ -165,6 +166,7 @@ function JobsList() {
               </div>
               <div className="row between">
                 <span>Net {usd(j.net)}{j.margin_pct != null && ` · ${j.margin_pct}%`}</span>
+                {Number(j.balance_due) > 0 && <span className="muted">Due {usd(j.balance_due)}</span>}
                 {j.material_pending && <span className="warn">Material total pending</span>}
               </div>
             </a>
@@ -317,8 +319,18 @@ function JobDetail({ id }) {
         </table>
         <ErrorText error={removeError} />
         {w.margin_pct != null && <p className="muted">Net margin {w.margin_pct}% of adjusted revenue</p>}
+        <p>Collected {usd(w.collected)} · <strong>Balance due {usd(w.balance_due)}</strong></p>
+        {job.status === "Closed" && Number(w.commission) > 0 && (
+          <p className="row between">
+            <span>{job.commission_paid_at ? `Commission paid ${job.commission_paid_at.slice(0, 10)}` : job.frozen ? "Commission frozen" : `Commission due: ${usd(w.commission)}`}</span>
+            <button className="link" onClick={() => api(`/jobs/${id}/commission-paid`, { method: "POST", body: { paid: !job.commission_paid_at } }).then(setJob)}>
+              {job.commission_paid_at ? "Undo" : "Mark commission paid"}
+            </button>
+          </p>
+        )}
       </section>
 
+      <JobPayments job={job} onSaved={setJob} />
       <JobDesigns job={job} reload={reloadJob} />
       <AddEntry jobId={id} onSaved={setJob} />
     </>
@@ -932,6 +944,184 @@ function DesignPipeline() {
           ))}
         </ul>
       </section>
+    </>
+  );
+}
+
+const METHODS = { card: "Card", check: "Check", ach: "ACH / transfer", cash: "Cash", other: "Other" };
+const PAY_TYPES = { deposit: "Deposit", progress: "Progress", final: "Final", change_order: "Change order" };
+
+function JobPayments({ job, onSaved }) {
+  const blank = { amount: "", method: "card", payment_type: "deposit", status: "received", date: today(), processing_fee: "", note: "" };
+  const [form, setForm] = useState(blank);
+  const [file, setFile] = useState(null);
+  const [fileKey, setFileKey] = useState(0);
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  const [submit, busy, error] = useSubmit(async () => {
+    const data = new FormData();
+    const { date, ...rest } = form;
+    for (const [k, v] of Object.entries(rest)) if (v !== "") data.append(k, v);
+    data.append(form.status === "received" ? "received_date" : "expected_date", date);
+    if (file) data.append("screenshot", await shrinkPhoto(file));
+    onSaved(await api(`/jobs/${job.id}/payments`, { method: "POST", body: data }));
+    setForm(blank);
+    setFile(null);
+    setFileKey((k) => k + 1);
+  });
+  const [act, actBusy, actError] = useSubmit(async ([p, change]) => {
+    if (change === "delete") {
+      if (confirm("Delete this payment?")) onSaved(await api(`/payments/${p.id}`, { method: "DELETE" }));
+    } else onSaved(await api(`/payments/${p.id}`, { method: "PATCH", body: change }));
+  });
+
+  return (
+    <section className="card">
+      <h2>Payments</h2>
+      <ErrorText error={actError} />
+      {job.payments.length === 0 && <p className="muted">No payments yet.</p>}
+      <ul className="list">
+        {job.payments.map((p) => (
+          <li key={p.id} className="entry-row">
+            <div className="row between">
+              <span>{p.status === "pending" ? `Expected ${p.expected_date || "soon"}` : p.received_date} · {METHODS[p.method]} · {PAY_TYPES[p.payment_type]}</span>
+              <strong>{usd(p.amount)}</strong>
+            </div>
+            <div className="row between muted">
+              <span>
+                {p.status === "pending" ? <span className="pill status-submitted">Pending</span> : "Received"}
+                {Number(p.processing_fee) > 0 && ` · fee ${usd(p.processing_fee)}`}
+                {p.note && ` · ${p.note}`}
+              </span>
+              <span>
+                {p.screenshot_url && <a href={p.screenshot_url} target="_blank" rel="noreferrer">Screenshot</a>}
+                {p.status === "pending" && <button className="link" disabled={actBusy} onClick={() => act([p, { status: "received", received_date: today() }])}>Mark received</button>}
+                <button className="link" disabled={actBusy} onClick={() => act([p, "delete"])}>Delete</button>
+              </span>
+            </div>
+          </li>
+        ))}
+      </ul>
+      <form onSubmit={submit}>
+        <h2>Add a payment</h2>
+        <div className="grid">
+          <Field label="Amount ($)"><input type="number" inputMode="decimal" step="0.01" min="0.01" value={form.amount} onChange={set("amount")} required /></Field>
+          <Field label="Method">
+            <select value={form.method} onChange={set("method")}>
+              {Object.entries(METHODS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+          </Field>
+          <Field label="Type">
+            <select value={form.payment_type} onChange={set("payment_type")}>
+              {Object.entries(PAY_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+          </Field>
+          <Field label="Status">
+            <select value={form.status} onChange={set("status")}>
+              <option value="received">Received</option>
+              <option value="pending">Pending / on its way</option>
+            </select>
+          </Field>
+          <Field label={form.status === "received" ? "Date received" : "Expected date"}><input type="date" value={form.date} onChange={set("date")} required /></Field>
+          {form.method === "card" && <Field label="Card fee ($)"><input type="number" inputMode="decimal" step="0.01" min="0" value={form.processing_fee} onChange={set("processing_fee")} /></Field>}
+          <Field label="Note"><input value={form.note} onChange={set("note")} /></Field>
+          <Field label="Screenshot (optional)"><input key={fileKey} type="file" accept="image/*,application/pdf" onChange={(e) => setFile(e.target.files[0] || null)} /></Field>
+        </div>
+        <ErrorText error={error} />
+        <button disabled={busy}>Add payment</button>
+      </form>
+    </section>
+  );
+}
+
+function Collections() {
+  const [period, setPeriod] = useState("week");
+  const [data, error, reload] = useLoad(`/collections?period=${period}&count=${period === "day" ? 14 : period === "year" ? 3 : 8}`, [period]);
+  const [paid, busy, paidError] = useSubmit(async (jobId) => {
+    await api(`/jobs/${jobId}/commission-paid`, { method: "POST", body: { paid: true } });
+    reload();
+  });
+  const newestFirst = (list) => [...list].reverse(); // current period shows first on a phone
+  const table = (rows, totalRow) => (
+    <div className="scroll">
+      <table className="grid-table">
+        <thead>
+          <tr><th />{newestFirst(data.buckets).map((b) => <th key={b.start}>{b.label}</th>)}<th>Total</th></tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.rep}><th>{METHODS[r.rep] || r.rep}</th>{newestFirst(r.amounts).map((a, i) => <td key={i}>{Number(a) ? usd(a) : "—"}</td>)}<td><strong>{usd(r.total)}</strong></td></tr>
+          ))}
+          {totalRow && (
+            <tr className="subtotal"><th>All reps</th>{newestFirst(totalRow).map((a, i) => <td key={i}>{usd(a)}</td>)}<td>{usd(totalRow.reduce((s, a) => s + Number(a), 0))}</td></tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  return (
+    <>
+      <h1>Collections</h1>
+      <div className="row segmented" role="group" aria-label="Period">
+        {["day", "week", "month", "quarter", "year"].map((p) => (
+          <button key={p} className={p === period ? "" : "secondary"} onClick={() => setPeriod(p)}>{p[0].toUpperCase() + p.slice(1)}</button>
+        ))}
+      </div>
+      <ErrorText error={error || paidError} />
+      {!data ? <p className="muted">Loading…</p> : (
+        <>
+          <section className="card">
+            <h2>Collected by rep</h2>
+            {data.collected.length === 0 ? <p className="muted">No payments received in this range.</p> : table(data.collected, data.collected_total)}
+          </section>
+          <section className="card">
+            <h2>Pending and on its way</h2>
+            {data.pending.length === 0 && <p className="muted">Nothing pending.</p>}
+            <ul className="list">
+              {data.pending.map((p) => (
+                <li key={p.id} className="row between entry-row">
+                  <a href={`#/jobs/${p.job_id}`}>{p.job}</a>
+                  <span className="muted">{p.rep} · {METHODS[p.method]} · {p.expected_date || "no date"}</span>
+                  <strong>{usd(p.amount)}</strong>
+                </li>
+              ))}
+            </ul>
+          </section>
+          <section className="card">
+            <h2>Commission due</h2>
+            {data.commission_due.length === 0 && <p className="muted">No closed, paid-in-full jobs waiting on commission.</p>}
+            <ul className="list">
+              {data.commission_due.map((c) => (
+                <li key={c.job_id} className="row between entry-row">
+                  <span><a href={`#/jobs/${c.job_id}`}>{c.job}</a> <span className="muted">· {c.rep}</span></span>
+                  <span><strong>{usd(c.commission)}</strong> <button className="link" disabled={busy} onClick={() => paid(c.job_id)}>Mark paid</button></span>
+                </li>
+              ))}
+            </ul>
+          </section>
+          <section className="card">
+            <h2>Still owed by customers</h2>
+            {data.outstanding.length === 0 && <p className="muted">Every open job is paid up.</p>}
+            <ul className="list">
+              {data.outstanding.map((o) => (
+                <li key={o.job_id} className="row between entry-row">
+                  <span><a href={`#/jobs/${o.job_id}`}>{o.job}</a> <span className="muted">· {o.rep}</span></span>
+                  <span className="muted">{o.days_since_payment == null ? "No payments yet" : o.days_since_payment === 0 ? "Paid today" : `Last paid ${o.days_since_payment}d ago`}</span>
+                  <strong>{usd(o.balance_due)}</strong>
+                </li>
+              ))}
+            </ul>
+          </section>
+          <section className="card">
+            <h2>Sold by rep</h2>
+            {data.sold.length === 0 ? <p className="muted">No jobs started in this range.</p> : table(data.sold)}
+          </section>
+          <section className="card">
+            <h2>How customers paid</h2>
+            {data.methods.length === 0 ? <p className="muted">No payments received in this range.</p> : table(data.methods)}
+          </section>
+        </>
+      )}
     </>
   );
 }

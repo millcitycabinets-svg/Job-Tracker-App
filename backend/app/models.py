@@ -48,6 +48,7 @@ class Job(Base):
     referral_amount: Mapped[Decimal] = mapped_column(Money, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    commission_paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     rep: Mapped[User | None] = relationship()
     ledger: Mapped[list["LedgerEntry"]] = relationship(back_populates="job", order_by="LedgerEntry.id")
@@ -55,6 +56,7 @@ class Job(Base):
     assembly: Mapped[list["AssemblyEntry"]] = relationship(viewonly=True, order_by="AssemblyEntry.id")
     reimbursements: Mapped[list["Reimbursement"]] = relationship(viewonly=True, order_by="Reimbursement.id")
     designs: Mapped[list["DesignEntry"]] = relationship(viewonly=True, order_by="DesignEntry.id")
+    payments: Mapped[list["Payment"]] = relationship(viewonly=True, order_by="Payment.id")
 
 
 class LedgerEntry(Base):
@@ -158,6 +160,32 @@ class DesignEntry(Base):
 
     designer: Mapped[User] = relationship()
     job: Mapped[Job | None] = relationship()
+
+
+PAYMENT_METHODS = ("card", "check", "ach", "cash", "other")
+PAYMENT_TYPES = ("deposit", "progress", "final", "change_order")
+
+
+class Payment(Base):
+    """Money in from a customer. Pending = promised or in transit; received = landed."""
+
+    __tablename__ = "payments"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"))
+    amount: Mapped[Decimal] = mapped_column(Money)
+    method: Mapped[str] = mapped_column(String(20))
+    payment_type: Mapped[str] = mapped_column(String(20), default="progress")
+    status: Mapped[str] = mapped_column(String(20), default="received")
+    expected_date: Mapped[date | None] = mapped_column(Date)
+    received_date: Mapped[date | None] = mapped_column(Date)
+    processing_fee: Mapped[Decimal] = mapped_column(Money, default=0)  # card fee; a job cost on line 10
+    note: Mapped[str | None] = mapped_column(Text)
+    screenshot: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
+    screenshot_type: Mapped[str | None] = mapped_column(String(100))
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    job: Mapped[Job] = relationship()
 
 
 class AuditLog(Base):

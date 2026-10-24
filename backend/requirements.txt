@@ -5,3 +5,4 @@ psycopg[binary]==3.3.6
 bcrypt==5.0.0
 itsdangerous
 python-multipart
+alembic==1.20.1

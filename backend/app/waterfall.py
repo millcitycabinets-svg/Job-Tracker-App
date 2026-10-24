@@ -42,6 +42,11 @@ def compute(job) -> dict:
     for e in job.assembly:
         if e.status in COUNTED:
             by_line[5] += e.total
+    received = Decimal(0)
+    for p in job.payments:
+        if p.status == "received":
+            received += p.amount
+            by_line[10] += p.processing_fee or 0
     for d in job.designs:
         by_line[8] += d.charge
     for r in job.reimbursements:
@@ -70,4 +75,6 @@ def compute(job) -> dict:
         "net": str(money(by_line[15])),
         "margin_pct": str(margin) if margin is not None else None,
         "material_pending": job.material_total is None,
+        "collected": str(money(received)),
+        "balance_due": str(money(by_line[3] - received)),
     }

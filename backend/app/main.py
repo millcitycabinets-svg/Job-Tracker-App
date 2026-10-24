@@ -15,19 +15,18 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import audit  # noqa: F401  (registers the audit listener)
+from . import audit, migrate  # noqa: F401  (audit registers its listener)
 from .auth import check_password, current_user, hash_password, owner_only, require
-from .db import Base, engine, get_db
+from .db import get_db
 from .models import (BOX_RATE, JOB_STATUSES, LEDGER_LINES, MOD_RATE, ROLES, TRANSITIONS, AssemblyEntry, AuditLog, Job,
-                     DesignEntry, LaborEntry, LedgerEntry, Reimbursement, User)
+                     PAYMENT_METHODS, PAYMENT_TYPES, DesignEntry, LaborEntry, LedgerEntry, Payment, Reimbursement, User)
 from .waterfall import compute, labor_total, money
 
 CREW_EDIT_WINDOW = timedelta(days=3)
 
 @asynccontextmanager
 async def lifespan(_app):
-    # shortcut: create_all only adds new tables; switch to Alembic before changing columns on live data
-    Base.metadata.create_all(engine)
+    migrate.upgrade()
     yield
 
 
@@ -209,7 +208,7 @@ def load_job(db: Session, job_id: int) -> Job:
         .options(selectinload(Job.ledger), selectinload(Job.labor).selectinload(LaborEntry.worker), selectinload(Job.rep),
                  selectinload(Job.assembly).selectinload(AssemblyEntry.worker),
                  selectinload(Job.reimbursements).selectinload(Reimbursement.user),
-                 selectinload(Job.designs).selectinload(DesignEntry.designer))
+                 selectinload(Job.designs).selectinload(DesignEntry.designer), selectinload(Job.payments))
     )
     if not job:
         raise HTTPException(404, "Job not found")
@@ -219,7 +218,7 @@ def load_job(db: Session, job_id: int) -> Job:
 def job_fields(job: Job):
     out = {c: getattr(job, c) for c in (
         "id", "name", "customer", "rep_id", "manufacturer", "boxes", "modifications", "install_date",
-        "status", "frozen", "created_at", "closed_at")}
+        "status", "frozen", "created_at", "closed_at", "commission_paid_at")}
     for c in ("invoice_total", "countertop_invoice", "material_total", "referral_amount"):
         v = getattr(job, c)
         out[c] = str(v) if v is not None else None
@@ -243,6 +242,7 @@ def job_out(job: Job):
         "assembly": [assembly_out(e) for e in job.assembly],
         "reimbursements": [reimbursement_out(r) for r in job.reimbursements],
         "designs": [design_out(d) for d in job.designs],
+        "payments": [payment_out(p) for p in job.payments],
     }
 
 
@@ -250,7 +250,8 @@ def job_out(job: Job):
 def list_jobs(status: str | None = None, rep_id: int | None = None, db: Session = Depends(get_db),
               _=Depends(owner_only)):
     q = select(Job).options(selectinload(Job.ledger), selectinload(Job.labor), selectinload(Job.rep),
-                            selectinload(Job.assembly), selectinload(Job.reimbursements), selectinload(Job.designs))
+                            selectinload(Job.assembly), selectinload(Job.reimbursements), selectinload(Job.designs),
+                            selectinload(Job.payments))
     if status:
         q = q.where(Job.status == status)
     if rep_id:
@@ -259,7 +260,8 @@ def list_jobs(status: str | None = None, rep_id: int | None = None, db: Session 
     for job in db.scalars(q.order_by(Job.created_at.desc())):
         w = compute(job)
         out.append({**job_fields(job), "adjusted_revenue": w["lines"][2]["amount"], "job_profit": w["job_profit"],
-                    "net": w["net"], "margin_pct": w["margin_pct"], "material_pending": w["material_pending"]})
+                    "net": w["net"], "margin_pct": w["margin_pct"], "material_pending": w["material_pending"],
+                    "balance_due": w["balance_due"]})
     return out
 
 
@@ -670,6 +672,205 @@ def design_suggestions(job_id: int, db: Session = Depends(get_db), _=Depends(own
               for d in db.scalars(select(DesignEntry).where(DesignEntry.job_id.is_(None)))]
     scored = sorted((x for x in scored if x[0] >= 0.5), key=lambda x: -x[0])[:5]
     return [{**design_out(d), "score": round(s, 2)} for s, d in scored]
+
+
+# ---------- payments (owner) ----------
+
+def payment_out(p: Payment):
+    return {"id": p.id, "job_id": p.job_id, "amount": str(p.amount), "method": p.method,
+            "payment_type": p.payment_type, "status": p.status, "expected_date": p.expected_date,
+            "received_date": p.received_date, "processing_fee": str(p.processing_fee), "note": p.note,
+            "screenshot_url": f"/api/payments/{p.id}/screenshot" if p.screenshot_type else None}
+
+
+def check_payment(data: dict):
+    if data.get("method") is not None and data["method"] not in PAYMENT_METHODS:
+        raise HTTPException(422, f"method must be one of {PAYMENT_METHODS}")
+    if data.get("payment_type") is not None and data["payment_type"] not in PAYMENT_TYPES:
+        raise HTTPException(422, f"payment_type must be one of {PAYMENT_TYPES}")
+    if data.get("status") is not None and data["status"] not in ("pending", "received"):
+        raise HTTPException(422, "status must be pending or received")
+
+
+@app.post("/api/jobs/{job_id}/payments")
+async def add_payment(
+    job_id: int,
+    amount: Decimal = Form(gt=0, le=10_000_000),
+    method: str = Form(),
+    payment_type: str = Form(default="progress"),
+    status: str = Form(default="received"),
+    expected_date: date | None = Form(default=None),
+    received_date: date | None = Form(default=None),
+    processing_fee: Decimal = Form(default=Decimal(0), ge=0),
+    note: str | None = Form(default=None),
+    screenshot: UploadFile | None = File(default=None),
+    db: Session = Depends(get_db),
+    user: User = Depends(owner_only),
+):
+    get_or_404(db, Job, job_id)
+    check_payment({"method": method, "payment_type": payment_type, "status": status})
+    data, kind = None, None
+    if screenshot and screenshot.filename:
+        kind = screenshot.content_type or ""
+        if not (kind.startswith("image/") or kind == "application/pdf"):
+            raise HTTPException(422, "Screenshot must be a photo or PDF")
+        data = await screenshot.read(MAX_RECEIPT_BYTES + 1)
+        if len(data) > MAX_RECEIPT_BYTES:
+            raise HTTPException(422, "Screenshot must be under 10 MB")
+    p = Payment(job_id=job_id, amount=amount, method=method, payment_type=payment_type, status=status,
+                expected_date=expected_date,
+                received_date=(received_date or date.today()) if status == "received" else None,
+                processing_fee=processing_fee, note=note, screenshot=data, screenshot_type=kind, created_by=user.id)
+    db.add(p)
+    db.commit()
+    return job_out(load_job(db, job_id))
+
+
+class PaymentPatch(BaseModel):
+    amount: Decimal | None = Field(default=None, gt=0)
+    method: str | None = None
+    payment_type: str | None = None
+    status: str | None = None
+    expected_date: date | None = None
+    received_date: date | None = None
+    processing_fee: Decimal | None = Field(default=None, ge=0)
+    note: str | None = None
+
+
+@app.patch("/api/payments/{pid}")
+def update_payment(pid: int, body: PaymentPatch, db: Session = Depends(get_db), _=Depends(owner_only)):
+    p = get_or_404(db, Payment, pid)
+    data = body.model_dump(exclude_unset=True)
+    check_payment(data)
+    for k, v in data.items():
+        setattr(p, k, v)
+    if p.status == "received" and not p.received_date:
+        p.received_date = date.today()
+    if p.status == "pending":
+        p.received_date = None
+    db.commit()
+    return job_out(load_job(db, p.job_id))
+
+
+@app.delete("/api/payments/{pid}")
+def delete_payment(pid: int, db: Session = Depends(get_db), _=Depends(owner_only)):
+    p = get_or_404(db, Payment, pid)
+    job_id = p.job_id
+    db.delete(p)
+    db.commit()
+    return job_out(load_job(db, job_id))
+
+
+@app.get("/api/payments/{pid}/screenshot")
+def payment_screenshot(pid: int, db: Session = Depends(get_db), _=Depends(owner_only)):
+    p = get_or_404(db, Payment, pid)
+    if not p.screenshot_type:
+        raise HTTPException(404, "No screenshot")
+    return Response(p.screenshot, media_type=p.screenshot_type, headers={"Cache-Control": "private, max-age=3600"})
+
+
+# ---------- collections report (owner) ----------
+
+PERIODS = ("day", "week", "month", "quarter", "year")
+MONTHS = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
+
+
+def bucket_start(d: date, period: str) -> date:
+    if period == "day":
+        return d
+    if period == "week":  # weeks run Sunday to Saturday
+        return d - timedelta(days=(d.weekday() + 1) % 7)
+    if period == "month":
+        return d.replace(day=1)
+    if period == "quarter":
+        return date(d.year, 3 * ((d.month - 1) // 3) + 1, 1)
+    return date(d.year, 1, 1)
+
+
+def bucket_label(start: date, period: str) -> str:
+    md = f"{MONTHS[start.month - 1]} {start.day}"
+    return {"day": md, "week": f"Wk of {md}", "month": f"{MONTHS[start.month - 1]} {start.year}",
+            "quarter": f"Q{(start.month - 1) // 3 + 1} {start.year}", "year": str(start.year)}[period]
+
+
+def last_buckets(today_: date, period: str, count: int) -> list[date]:
+    starts = [bucket_start(today_, period)]
+    while len(starts) < count:
+        starts.insert(0, bucket_start(starts[0] - timedelta(days=1), period))
+    return starts
+
+
+@app.get("/api/collections")
+def collections(period: str = "week", count: int = 8, db: Session = Depends(get_db), _=Depends(owner_only)):
+    if period not in PERIODS:
+        raise HTTPException(422, f"period must be one of {PERIODS}")
+    count = max(1, min(count, 60))
+    starts = last_buckets(date.today(), period, count)
+    index = {s: i for i, s in enumerate(starts)}
+
+    jobs = list(db.scalars(select(Job).options(
+        selectinload(Job.ledger), selectinload(Job.labor), selectinload(Job.rep), selectinload(Job.assembly),
+        selectinload(Job.reimbursements), selectinload(Job.designs), selectinload(Job.payments))))
+
+    def zeros():
+        return [Decimal(0)] * count
+
+    collected, sold, methods = {}, {}, {}
+    pending, outstanding, commission_due = [], [], []
+    for job in jobs:
+        rep = job.rep.name if job.rep else "No rep"
+        w = compute(job)
+        sold_at = index.get(bucket_start(job.created_at.date(), period))
+        if sold_at is not None:
+            sold.setdefault(rep, zeros())[sold_at] += Decimal(w["lines"][2]["amount"])
+        last_paid = None
+        for p in job.payments:
+            if p.status == "pending":
+                pending.append({**payment_out(p), "job": job.name, "rep": rep})
+                continue
+            last_paid = max(filter(None, (last_paid, p.received_date)))
+            i = index.get(bucket_start(p.received_date, period))
+            if i is not None:
+                collected.setdefault(rep, zeros())[i] += p.amount
+                methods.setdefault(p.method, zeros())[i] += p.amount
+        balance = Decimal(w["balance_due"])
+        if balance > 0 and job.status != "Closed":
+            outstanding.append({"job_id": job.id, "job": job.name, "rep": rep, "balance_due": str(balance),
+                                "last_payment": last_paid,
+                                "days_since_payment": (date.today() - last_paid).days if last_paid else None})
+        if (job.status == "Closed" and not job.frozen and not job.commission_paid_at and balance <= 0
+                and Decimal(w["commission"]) > 0):
+            commission_due.append({"job_id": job.id, "job": job.name, "rep": rep, "commission": w["commission"],
+                                   "closed_at": job.closed_at})
+
+    def rows(table):
+        return [{"rep": rep, "amounts": [str(money(v)) for v in vals], "total": str(money(sum(vals)))}
+                for rep, vals in sorted(table.items())]
+
+    totals = [sum(vals[i] for vals in collected.values()) for i in range(count)]
+    return {
+        "period": period,
+        "buckets": [{"start": s, "label": bucket_label(s, period)} for s in starts],
+        "collected": rows(collected),
+        "collected_total": [str(money(t)) for t in totals],
+        "sold": rows(sold),
+        "methods": rows(methods),
+        "pending": sorted(pending, key=lambda p: str(p["expected_date"] or "")),
+        "outstanding": sorted(outstanding, key=lambda o: -Decimal(o["balance_due"])),
+        "commission_due": commission_due,
+    }
+
+
+class CommissionPaidIn(BaseModel):
+    paid: bool
+
+
+@app.post("/api/jobs/{job_id}/commission-paid")
+def commission_paid(job_id: int, body: CommissionPaidIn, db: Session = Depends(get_db), _=Depends(owner_only)):
+    job = get_or_404(db, Job, job_id)
+    job.commission_paid_at = datetime.now(timezone.utc) if body.paid else None
+    db.commit()
+    return job_out(load_job(db, job_id))
 
 
 # ---------- approvals (owner) ----------
