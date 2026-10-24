@@ -188,6 +188,23 @@ class Payment(Base):
     job: Mapped[Job] = relationship()
 
 
+class IntakeEmail(Base):
+    """A ready-to-order email (or a vendor reply on its thread) received from the Gmail automation."""
+
+    __tablename__ = "intake_emails"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    message_id: Mapped[str] = mapped_column(String(200), unique=True)  # dedupe: the same email never counts twice
+    thread_id: Mapped[str | None] = mapped_column(String(200), index=True)
+    sender: Mapped[str | None] = mapped_column(String(200))
+    subject: Mapped[str] = mapped_column(String(500))
+    parsed: Mapped[dict] = mapped_column(JSON)
+    outcome: Mapped[str] = mapped_column(String(30))  # created / attached / material / unmatched / ignored / resolved
+    job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    job: Mapped[Job | None] = relationship()
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
     id: Mapped[int] = mapped_column(primary_key=True)

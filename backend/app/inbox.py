@@ -48,6 +48,52 @@ TOOL = {
 }
 
 
+RTO_TOOL = {
+    "name": "read_ready_to_order",
+    "description": "Pull job facts out of a Mill City READY TO ORDER email, its attached estimate PDF, or a vendor's reply.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "is_vendor_reply": {"type": "boolean",
+                                "description": "True if a cabinet vendor (Highland/HCI, Oasis, Procraft...) wrote this, e.g. a sales order."},
+            "job_name": {"type": "string",
+                         "description": "Job name as written after 'READY TO ORDER:', WITHOUT any 'change order' / 'add on' "
+                                        "suffix, e.g. 'Keith Olson - Centennial Vanity'."},
+            "is_change_order": {"type": "boolean", "description": "Subject or body says change order or add-on/add on."},
+            "customer": {"type": "string"},
+            "rep_name": {"type": "string", "description": "Sales rep / job owner if shown anywhere (email or PDF)."},
+            "manufacturer": {"type": "string", "description": "Cabinet supplier, e.g. Highland, Oasis, Procraft."},
+            "invoice_total": {"type": "number", "description": "Total the CUSTOMER pays, from the Mill City estimate/invoice PDF."},
+            "material_total": {"type": "number", "description": "What Mill City pays the VENDOR (sales order total), if shown."},
+            "boxes": {"type": "integer"},
+            "modifications": {"type": "integer", "description": "Number of modifications; 0 if NA or NONE."},
+        },
+        "required": ["is_vendor_reply", "is_change_order"],
+    },
+}
+
+
+def read_rto(subject: str, body: str, pdf: bytes | None) -> dict:
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise HTTPException(503, "ANTHROPIC_API_KEY is not set on the app")
+    import anthropic
+
+    content: list[dict] = []
+    if pdf:
+        content.append({"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
+                                                       "data": base64.standard_b64encode(pdf).decode()}})
+    content.append({"type": "text", "text": f"Subject: {subject}\n\n{body[:20000]}\n\n"
+                                            "Leave out any field you can't find. Never guess a dollar amount."})
+    try:
+        msg = anthropic.Anthropic().messages.create(
+            model=MODEL, max_tokens=1024, tools=[RTO_TOOL], tool_choice={"type": "tool", "name": "read_ready_to_order"},
+            messages=[{"role": "user", "content": content}],
+        )
+    except anthropic.APIError as e:
+        raise HTTPException(502, f"Claude unavailable ({e.__class__.__name__})")
+    return next((b.input for b in msg.content if b.type == "tool_use"), {})
+
+
 def parse(text: str, image: bytes | None, image_type: str | None, job_names: list[str], crew_names: list[str]) -> dict:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(503, "Smart input isn't set up yet: add ANTHROPIC_API_KEY to the app's settings.")

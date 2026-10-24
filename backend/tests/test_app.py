@@ -326,6 +326,7 @@ def test_migrations_match_models_and_adopt_old_databases():
     reset()
     Base.metadata.create_all(engine)
     with engine.begin() as conn:
+        conn.execute(text("DROP TABLE intake_emails"))  # added after migrations existed
         conn.execute(text("DROP TABLE payments"))
         conn.execute(text("ALTER TABLE jobs DROP COLUMN commission_paid_at"))
     upgrade()
@@ -369,3 +370,50 @@ def test_smart_input_drafts_an_entry(monkeypatch):
     assert owner.post("/api/inbox/parse", data={"text": "500 from someone"}).json()["job_id"] is None
     assert owner.post("/api/inbox/parse", data={"text": ""}).status_code == 422
     assert client("omar@x.com", "omarpass").post("/api/inbox/parse", data={"text": "x"}).status_code == 403
+
+
+def test_ready_to_order_intake(monkeypatch):
+    from app import inbox
+
+    owner = client("skyler@x.com", "ownerpass")
+    replies = {}
+    monkeypatch.setattr(inbox, "read_rto", lambda subject, body, pdf: replies[subject])
+    monkeypatch.setenv("INTAKE_TOKEN", "secret")
+    bot = TestClient(app, headers={"x-intake-token": "secret"})
+
+    def send(mid, subject, thread="t1", body="filled in", **parsed):
+        replies[subject] = {"is_vendor_reply": False, "is_change_order": False, **parsed}
+        r = bot.post("/api/intake/email", data={"message_id": mid, "thread_id": thread, "subject": subject, "body": body})
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    assert TestClient(app).post("/api/intake/email", data={"message_id": "x", "subject": "s"}).status_code == 401
+
+    r = send("m1", "READY TO ORDER: Keith Olson - Centennial Vanity", job_name="Keith Olson - Centennial Vanity",
+             rep_name="Drew", invoice_total=9000, manufacturer="Highland", boxes=10, modifications=1)
+    assert r["outcome"] == "created"
+    jid = r["job_id"]
+    assert send("m1", "READY TO ORDER: Keith Olson - Centennial Vanity")["duplicate"] is True
+
+    # Vendor reply on the same thread fills the material total.
+    assert send("v1", "Re: READY TO ORDER: Keith Olson - Centennial Vanity", is_vendor_reply=True,
+                material_total=3800)["outcome"] == "material"
+    # Add-on on its own thread attaches as a change order; its vendor reply adds material.
+    r = send("m2", "READY TO ORDER: Keith Olson - Centennial Vanity Add On", thread="t2",
+             job_name="Keith Olson - Centennial Vanity", is_change_order=True, invoice_total=1200, boxes=2)
+    assert r["outcome"] == "attached" and r["job_id"] == jid
+    send("v2", "Re: READY TO ORDER: Keith Olson - Centennial Vanity Add On", thread="t2", is_vendor_reply=True,
+         material_total=500)
+    job = owner.get(f"/api/jobs/{jid}").json()
+    assert job["rep_name"] == "Drew" and job["boxes"] == 12
+    assert line(job, 3) == "10200.00" and line(job, 4) == "4300.00"
+
+    # Blank template from the owner is ignored; a near-miss name waits for the owner.
+    assert send("m3", "READY TO ORDER: Mitch", thread="t3", body="FINISHES - [Supplier - Finish]")["outcome"] == "ignored"
+    near = send("m4", "READY TO ORDER: Keith Olsen - Centennial Vanity", thread="t4",
+                job_name="Keith Olsen - Centennial Vanity", invoice_total=50)
+    assert near["outcome"] == "unmatched"
+    assert [e["id"] for e in owner.get("/api/intake?outcome=unmatched").json()] == [near["id"]]
+    assert owner.post(f"/api/intake/{near['id']}/resolve", json={}).json()["outcome"] == "resolved"
+    assert owner.post(f"/api/intake/{near['id']}/resolve", json={}).status_code == 422
+    assert client("omar@x.com", "omarpass").get("/api/intake").status_code == 403

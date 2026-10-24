@@ -147,6 +147,7 @@ function JobsList() {
         <h1>Jobs</h1>
         <a className="button" href="#/new">New job</a>
       </div>
+      <IntakeQueue />
       <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Filter by status">
         <option value="">All statuses</option>
         {STATUSES.map((s) => <option key={s}>{s}</option>)}
@@ -1271,5 +1272,39 @@ function Inbox() {
         </form>
       )}
     </>
+  );
+}
+
+function IntakeQueue() {
+  const [items, , reload] = useLoad("/intake?outcome=unmatched");
+  const [jobs] = useLoad("/job-names");
+  const [resolve, busy, error] = useSubmit(async ([id, jobId]) => {
+    await api(`/intake/${id}/resolve`, { method: "POST", body: jobId ? { job_id: jobId } : {} });
+    reload();
+  });
+  if (!items?.length) return null;
+  return (
+    <section className="card draft">
+      <h2>Emails that need you ({items.length})</h2>
+      <p className="muted">These ready-to-order emails looked close to an existing job, so nothing was changed yet.</p>
+      <ErrorText error={error} />
+      <ul className="list">
+        {items.map((e) => (
+          <li key={e.id} className="entry-row">
+            <div><strong>{e.subject}</strong></div>
+            <div className="muted">
+              {[e.parsed.invoice_total && `Invoice ${usd(e.parsed.invoice_total)}`, e.parsed.material_total && `Material ${usd(e.parsed.material_total)}`, e.parsed.rep_name].filter(Boolean).join(" · ")}
+            </div>
+            <div className="row">
+              <select disabled={busy} value="" onChange={(ev) => ev.target.value && resolve([e.id, Number(ev.target.value)])} aria-label="Add to an existing job">
+                <option value="">Add to existing job…</option>
+                {jobs?.map((j) => <option key={j.id} value={j.id}>{j.name}</option>)}
+              </select>
+              {!e.parsed.is_vendor_reply && <button disabled={busy} className="secondary" onClick={() => resolve([e.id, null])}>Create new job</button>}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }

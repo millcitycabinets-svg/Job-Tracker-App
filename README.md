@@ -14,6 +14,7 @@ Job profitability, crew hours and collections for Mill City Cabinetry. Spec: `do
 - Payments per job: received or pending, method, type, card fee (a job cost on line 10), optional screenshot. Each job shows collected and balance due.
 - Collections: collected by rep by day / week (Sunday to Saturday) / month / quarter / year, pending payments, balances still owed, sold by rep, payment methods, and commission due on closed, paid-in-full jobs with a Mark paid button.
 - Quick log (owner): type, dictate or drop a screenshot; Claude drafts the entry (payment, crew hours or job cost), you check it and save. Needs `ANTHROPIC_API_KEY` set on the app.
+- Ready-to-order intake: `POST /api/intake/email` (header `x-intake-token`) takes an email's subject, body, message and thread id and the estimate PDF. New jobs are created, change orders / add-ons attach to their job, vendor replies on the same thread fill the material total, duplicates are ignored, and near-miss names wait on the Jobs page for the owner. Needs `INTAKE_TOKEN` and `ANTHROPIC_API_KEY`.
 - Every create, edit and delete is recorded in an audit log (who, when, old and new value).
 
 ## Run locally

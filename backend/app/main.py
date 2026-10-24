@@ -1,3 +1,4 @@
+import hmac
 import os
 import re
 import time
@@ -19,7 +20,7 @@ from . import audit, inbox, migrate  # noqa: F401  (audit registers its listener
 from .auth import check_password, current_user, hash_password, owner_only, require
 from .db import get_db
 from .models import (BOX_RATE, JOB_STATUSES, LEDGER_LINES, MOD_RATE, ROLES, TRANSITIONS, AssemblyEntry, AuditLog, Job,
-                     PAYMENT_METHODS, PAYMENT_TYPES, DesignEntry, LaborEntry, LedgerEntry, Payment, Reimbursement, User)
+                     PAYMENT_METHODS, PAYMENT_TYPES, DesignEntry, IntakeEmail, LaborEntry, LedgerEntry, Payment, Reimbursement, User)
 from .waterfall import compute, labor_total, money
 
 CREW_EDIT_WINDOW = timedelta(days=3)
@@ -795,6 +796,173 @@ async def inbox_parse(
     entry["job_id"] = by_name.get(entry.get("job"))
     entry["worker_id"] = next((u.id for u in crew if u.name == entry.get("worker")), None)
     return entry
+
+
+# ---------- ready-to-order email intake (Gmail automation -> app) ----------
+
+TEMPLATE_MARKER = "[Supplier - Finish]"  # Skyler's blank template sent to Delani; only her filled-in copy counts
+
+
+def automation_user(db: Session) -> User:
+    owner = db.scalar(select(User).where(User.role == "owner", User.active).order_by(User.id))
+    if not owner:
+        raise HTTPException(503, "No owner login exists yet")
+    return owner
+
+
+def match_rep(db: Session, name: str | None) -> int | None:
+    if not name:
+        return None
+    first = name.strip().lower().split()[0] if name.strip() else ""
+    for rep in db.scalars(select(User).where(User.role == "rep", User.active)):
+        if rep.name.lower() == name.strip().lower() or rep.name.lower().split()[0] == first:
+            return rep.id
+    return None
+
+
+def best_job(db: Session, name: str) -> tuple[Job | None, float]:
+    best, score = None, 0.0
+    for job in db.scalars(select(Job).where(Job.status != "Closed")):
+        s = 1.0 if job.name.lower() == name.lower() else name_score(name, job.name)
+        if s > score:
+            best, score = job, s
+    return best, score
+
+
+def apply_to_job(db: Session, job: Job, p: dict, owner: User) -> str:
+    """Attach an email's numbers to an existing job. Change orders add lines; a repeat email only fills blanks."""
+    if p.get("is_change_order"):
+        note = "From ready-to-order email (change order / add-on)"
+        if p.get("invoice_total"):
+            db.add(LedgerEntry(job_id=job.id, line=2, amount=Decimal(str(p["invoice_total"])), note=note, created_by=owner.id))
+        if p.get("material_total"):
+            db.add(LedgerEntry(job_id=job.id, line=4, amount=Decimal(str(p["material_total"])), note=note, created_by=owner.id))
+        job.boxes += p.get("boxes") or 0
+        job.modifications += p.get("modifications") or 0
+        return "attached"
+    if job.material_total is None and p.get("material_total"):
+        job.material_total = Decimal(str(p["material_total"]))
+    if not job.invoice_total and p.get("invoice_total"):
+        job.invoice_total = Decimal(str(p["invoice_total"]))
+    if not job.rep_id:
+        job.rep_id = match_rep(db, p.get("rep_name"))
+    job.manufacturer = job.manufacturer or p.get("manufacturer")
+    job.boxes = job.boxes or p.get("boxes") or 0
+    job.modifications = job.modifications or p.get("modifications") or 0
+    return "attached"
+
+
+def create_job_from(db: Session, p: dict, subject: str) -> Job:
+    name = (p.get("job_name") or subject.split(":", 1)[-1]).strip()[:200]
+    job = Job(name=name, customer=p.get("customer"), rep_id=match_rep(db, p.get("rep_name")),
+              manufacturer=p.get("manufacturer"), invoice_total=Decimal(str(p.get("invoice_total") or 0)),
+              material_total=Decimal(str(p["material_total"])) if p.get("material_total") else None,
+              boxes=p.get("boxes") or 0, modifications=p.get("modifications") or 0)
+    db.add(job)
+    db.flush()
+    return job
+
+
+def route_email(db: Session, p: dict, thread_id: str | None, subject: str) -> tuple[str, Job | None]:
+    owner = automation_user(db)
+    if p.get("is_vendor_reply"):
+        first = db.scalar(select(IntakeEmail).where(IntakeEmail.thread_id == thread_id, IntakeEmail.job_id.is_not(None))
+                          .order_by(IntakeEmail.id)) if thread_id else None
+        if not first or not p.get("material_total"):
+            return ("ignored" if not p.get("material_total") else "unmatched"), None
+        job = db.get(Job, first.job_id)
+        if first.parsed.get("is_change_order"):
+            db.add(LedgerEntry(job_id=job.id, line=4, amount=Decimal(str(p["material_total"])),
+                               note="Vendor sales order (change order / add-on)", created_by=owner.id))
+            return "material", job
+        if job.material_total is None:
+            job.material_total = Decimal(str(p["material_total"]))
+            return "material", job
+        return "unmatched", job  # job already has a material total; let the owner decide
+
+    name = (p.get("job_name") or subject.split(":", 1)[-1]).strip()
+    job, score = best_job(db, name)
+    if p.get("is_change_order"):
+        return (apply_to_job(db, job, p, owner), job) if job and score >= 0.75 else ("unmatched", None)
+    if job and score == 1.0:
+        return apply_to_job(db, job, p, owner), job
+    if job and score >= 0.75:
+        return "unmatched", None  # close to an existing job but not the same name: owner picks
+    return "created", create_job_from(db, p, subject)
+
+
+def intake_out(e: IntakeEmail):
+    return {"id": e.id, "subject": e.subject, "sender": e.sender, "outcome": e.outcome, "job_id": e.job_id,
+            "job": e.job.name if e.job else None, "parsed": e.parsed, "created_at": e.created_at}
+
+
+@app.post("/api/intake/email")
+async def intake_email(
+    request: Request,
+    message_id: str = Form(min_length=1, max_length=200),
+    subject: str = Form(max_length=500),
+    body: str = Form(default=""),
+    thread_id: str | None = Form(default=None),
+    sender: str | None = Form(default=None),
+    pdf: UploadFile | None = File(default=None),
+    db: Session = Depends(get_db),
+):
+    token = os.environ.get("INTAKE_TOKEN")
+    if not token:
+        raise HTTPException(503, "INTAKE_TOKEN is not set on the app")
+    if not hmac.compare_digest(request.headers.get("x-intake-token", ""), token):
+        raise HTTPException(401, "Bad intake token")
+    seen = db.scalar(select(IntakeEmail).where(IntakeEmail.message_id == message_id))
+    if seen:
+        return {**intake_out(seen), "duplicate": True}
+
+    if TEMPLATE_MARKER in body:
+        p, outcome, job = {"reason": "blank template"}, "ignored", None
+    else:
+        data = None
+        if pdf and pdf.filename and (pdf.content_type == "application/pdf" or pdf.filename.lower().endswith(".pdf")):
+            data = await pdf.read(MAX_RECEIPT_BYTES + 1)
+            if len(data) > MAX_RECEIPT_BYTES:
+                data = None
+        p = inbox.read_rto(subject, body, data)
+        outcome, job = route_email(db, p, thread_id, subject)
+    e = IntakeEmail(message_id=message_id, thread_id=thread_id, sender=sender, subject=subject[:500], parsed=p,
+                    outcome=outcome, job_id=job.id if job else None)
+    db.add(e)
+    db.commit()
+    return intake_out(e)
+
+
+@app.get("/api/intake")
+def intake_list(outcome: str | None = None, db: Session = Depends(get_db), _=Depends(owner_only)):
+    q = select(IntakeEmail).order_by(IntakeEmail.id.desc()).limit(200)
+    if outcome:
+        q = q.where(IntakeEmail.outcome == outcome)
+    return [intake_out(e) for e in db.scalars(q)]
+
+
+class ResolveIn(BaseModel):
+    job_id: int | None = None  # attach to this job; omit to create a new job from the email
+
+
+@app.post("/api/intake/{intake_id}/resolve")
+def intake_resolve(intake_id: int, body: ResolveIn, db: Session = Depends(get_db), user: User = Depends(owner_only)):
+    e = get_or_404(db, IntakeEmail, intake_id)
+    if e.outcome != "unmatched":
+        raise HTTPException(422, "This email was already handled")
+    if body.job_id:
+        job = get_or_404(db, Job, body.job_id)
+        if e.parsed.get("is_vendor_reply") and e.parsed.get("material_total"):
+            db.add(LedgerEntry(job_id=job.id, line=4, amount=Decimal(str(e.parsed["material_total"])),
+                               note="Vendor sales order", created_by=user.id))
+        else:
+            apply_to_job(db, job, e.parsed, user)
+    else:
+        check_job_fields(db, {"name": (e.parsed.get("job_name") or e.subject.split(":", 1)[-1]).strip()})
+        job = create_job_from(db, e.parsed, e.subject)
+    e.job_id, e.outcome = job.id, "resolved"
+    db.commit()
+    return intake_out(e)
 
 
 # ---------- collections report (owner) ----------
