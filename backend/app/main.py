@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import audit, migrate  # noqa: F401  (audit registers its listener)
+from . import audit, inbox, migrate  # noqa: F401  (audit registers its listener)
 from .auth import check_password, current_user, hash_password, owner_only, require
 from .db import get_db
 from .models import (BOX_RATE, JOB_STATUSES, LEDGER_LINES, MOD_RATE, ROLES, TRANSITIONS, AssemblyEntry, AuditLog, Job,
@@ -767,6 +767,34 @@ def payment_screenshot(pid: int, db: Session = Depends(get_db), _=Depends(owner_
     if not p.screenshot_type:
         raise HTTPException(404, "No screenshot")
     return Response(p.screenshot, media_type=p.screenshot_type, headers={"Cache-Control": "private, max-age=3600"})
+
+
+# ---------- smart input (owner) ----------
+
+@app.post("/api/inbox/parse")
+async def inbox_parse(
+    text: str = Form(default="", max_length=4000),
+    image: UploadFile | None = File(default=None),
+    db: Session = Depends(get_db),
+    _=Depends(owner_only),
+):
+    data, kind = None, None
+    if image and image.filename:
+        kind = image.content_type or ""
+        if kind not in ("image/jpeg", "image/png", "image/gif", "image/webp", "application/pdf"):
+            raise HTTPException(422, "Use a JPG, PNG or PDF")
+        data = await image.read(MAX_RECEIPT_BYTES + 1)
+        if len(data) > MAX_RECEIPT_BYTES:
+            raise HTTPException(422, "File must be under 10 MB")
+    if not text.strip() and not data:
+        raise HTTPException(422, "Type something or add a screenshot")
+    jobs = list(db.scalars(select(Job).where(Job.status != "Closed").order_by(Job.name)))
+    crew = list(db.scalars(select(User).where(User.role == "crew", User.active).order_by(User.name)))
+    entry = inbox.parse(text, data, kind, [j.name for j in jobs], [u.name for u in crew])
+    by_name = {j.name: j.id for j in jobs}
+    entry["job_id"] = by_name.get(entry.get("job"))
+    entry["worker_id"] = next((u.id for u in crew if u.name == entry.get("worker")), None)
+    return entry
 
 
 # ---------- collections report (owner) ----------

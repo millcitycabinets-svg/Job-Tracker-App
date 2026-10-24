@@ -332,3 +332,40 @@ def test_migrations_match_models_and_adopt_old_databases():
     assert "payments" in inspect(engine).get_table_names()
     assert "commission_paid_at" in [c["name"] for c in inspect(engine).get_columns("jobs")]
     reset()
+
+
+def test_smart_input_drafts_an_entry(monkeypatch):
+    import anthropic
+    from types import SimpleNamespace
+
+    owner = client("skyler@x.com", "ownerpass")
+    jid = make_job(owner)["id"]
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert owner.post("/api/inbox/parse", data={"text": "x"}).status_code == 503
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    sent = {}
+
+    class FakeClient:
+        def __init__(self):
+            self.messages = self
+
+        def create(self, **kw):
+            sent.update(kw)
+            return SimpleNamespace(content=[SimpleNamespace(type="tool_use", input={
+                "kind": "hours", "job": "Dustin Selden", "worker": "Omar", "hours": 13, "confidence": "high"})])
+
+    monkeypatch.setattr(anthropic, "Anthropic", FakeClient)
+    r = owner.post("/api/inbox/parse", data={"text": "Omar 13 hours Selden"},
+                   files={"image": ("s.png", PNG, "image/png")})
+    assert r.status_code == 200, r.text
+    assert r.json()["job_id"] == jid and r.json()["worker_id"] == ids()["Omar"]
+    prompt = sent["messages"][0]["content"]
+    assert prompt[0]["type"] == "image" and "Dustin Selden" in prompt[-1]["text"]
+
+    # A name not on our lists is dropped, never invented.
+    FakeClient.create = lambda self, **kw: SimpleNamespace(content=[SimpleNamespace(
+        type="tool_use", input={"kind": "payment", "job": "Made Up Job", "amount": 500, "confidence": "low"})])
+    assert owner.post("/api/inbox/parse", data={"text": "500 from someone"}).json()["job_id"] is None
+    assert owner.post("/api/inbox/parse", data={"text": ""}).status_code == 422
+    assert client("omar@x.com", "omarpass").post("/api/inbox/parse", data={"text": "x"}).status_code == 403

@@ -85,7 +85,7 @@ export default function App() {
   const owner = me.role === "owner";
   const logout = () => api("/logout", { method: "POST" }).then(() => setMe(null));
   const nav = {
-    owner: [["/", "Jobs"], ["/hours", "Hours"], ["/assembly", "Assembly"], ["/collections", "Collections"], ["/designs", "Designs"], ["/approvals", "Approvals"], ["/team", "Team"]],
+    owner: [["/", "Jobs"], ["/inbox", "Quick log"], ["/hours", "Hours"], ["/assembly", "Assembly"], ["/collections", "Collections"], ["/designs", "Designs"], ["/approvals", "Approvals"], ["/team", "Team"]],
     crew: [["/", "Hours"], ["/assembly", "Assembly"], ["/reimbursements", "Reimbursements"]],
     designer: [["/", "My designs"], ["/reimbursements", "Reimbursements"]],
   }[me.role] || [];
@@ -103,6 +103,7 @@ export default function App() {
   else if (hash === "/approvals") page = <Approvals />;
   else if (hash === "/designs") page = <DesignPipeline />;
   else if (hash === "/collections") page = <Collections />;
+  else if (hash === "/inbox") page = <Inbox />;
   else if (hash === "/team") page = <Team />;
   else page = <JobsList />;
 
@@ -1121,6 +1122,153 @@ function Collections() {
             {data.methods.length === 0 ? <p className="muted">No payments received in this range.</p> : table(data.methods)}
           </section>
         </>
+      )}
+    </>
+  );
+}
+
+const KIND_LABEL = { payment: "Payment in", hours: "Crew hours", cost: "Job cost" };
+
+function Inbox() {
+  const [text, setText] = useState("");
+  const [file, setFile] = useState(null);
+  const [fileKey, setFileKey] = useState(0);
+  const [draft, setDraft] = useState(null);
+  const [saved, setSaved] = useState(null);
+  const [jobs] = useLoad("/job-names");
+  const [users] = useLoad("/users");
+  const crew = (users || []).filter((u) => u.role === "crew" && u.active);
+
+  const [read, reading, readError] = useSubmit(async () => {
+    setSaved(null);
+    const data = new FormData();
+    data.append("text", text);
+    if (file) data.append("image", await shrinkPhoto(file));
+    const d = await api("/inbox/parse", { method: "POST", body: data });
+    setDraft({
+      kind: d.kind === "unknown" ? "cost" : d.kind, job_id: d.job_id ?? "", worker_id: d.worker_id ?? "",
+      amount: d.amount ?? "", hours: d.hours ?? "", date: d.date || today(), method: d.method || "check",
+      payment_type: d.payment_type || "progress", status: d.status || "received", processing_fee: d.processing_fee ?? "",
+      line: String(d.line || 4), payee: d.payee || "", note: d.note || "",
+      confidence: d.confidence, question: d.question, unknown: d.kind === "unknown",
+    });
+  });
+
+  const [save, saving, saveError] = useSubmit(async () => {
+    const d = draft;
+    const job = jobs?.find((j) => String(j.id) === String(d.job_id));
+    if (d.kind === "payment") {
+      const data = new FormData();
+      for (const [k, v] of Object.entries({ amount: d.amount, method: d.method, payment_type: d.payment_type, status: d.status, processing_fee: d.processing_fee || 0, note: d.note }))
+        if (v !== "") data.append(k, v);
+      data.append(d.status === "received" ? "received_date" : "expected_date", d.date);
+      if (file) data.append("screenshot", await shrinkPhoto(file));
+      await api(`/jobs/${d.job_id}/payments`, { method: "POST", body: data });
+    } else if (d.kind === "hours") {
+      await api("/labor", { method: "POST", body: { job_id: Number(d.job_id), worker_id: Number(d.worker_id), hours: d.hours, work_date: d.date } });
+    } else {
+      await api(`/jobs/${d.job_id}/ledger`, { method: "POST", body: { line: Number(d.line), amount: d.amount, payee: d.payee || null, note: d.note || null, entry_date: d.date } });
+    }
+    setSaved({ text: `Saved ${KIND_LABEL[d.kind].toLowerCase()} on ${job?.name}`, jobId: d.job_id });
+    setDraft(null);
+    setText("");
+    setFile(null);
+    setFileKey((k) => k + 1);
+  });
+
+  const set = (k) => (e) => setDraft({ ...draft, [k]: e.target.value });
+
+  return (
+    <>
+      <form className="card" onSubmit={read}>
+        <h1>Quick log</h1>
+        <p className="muted">Type or dictate one line, or add a screenshot. Examples: "Omar 13 hours at Dustin Selden", "Got a $4,200 check from Garcia", "Abraham $2,800 countertops Selden".</p>
+        <textarea rows="3" value={text} onChange={(e) => setText(e.target.value)} placeholder="What happened?" aria-label="What happened?" />
+        <Field label="Screenshot or receipt (optional)">
+          <input key={fileKey} type="file" accept="image/*,application/pdf" onChange={(e) => setFile(e.target.files[0] || null)} />
+        </Field>
+        <ErrorText error={readError} />
+        {saved && <p className="ok" role="status">{saved.text} · <a href={`#/jobs/${saved.jobId}`}>Open job</a></p>}
+        <button disabled={reading || (!text.trim() && !file)}>{reading ? "Reading…" : "Read it"}</button>
+      </form>
+
+      {draft && (
+        <form className="card draft" onSubmit={save}>
+          <div className="row between">
+            <h2>Check this, then save</h2>
+            {draft.confidence !== "high" && <span className="pill status-submitted">Double-check</span>}
+          </div>
+          {draft.unknown && <p className="warn">Couldn't tell what this is. Pick the type below.</p>}
+          {draft.question && <p className="warn">{draft.question}</p>}
+          <div className="grid">
+            <Field label="What is it">
+              <select value={draft.kind} onChange={set("kind")}>
+                {Object.entries(KIND_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+              </select>
+            </Field>
+            <Field label="Job">
+              <select value={draft.job_id} onChange={set("job_id")} required>
+                <option value="">Pick a job</option>
+                {jobs?.map((j) => <option key={j.id} value={j.id}>{j.name}</option>)}
+              </select>
+            </Field>
+            {draft.kind === "hours" ? (
+              <>
+                <Field label="Who">
+                  <select value={draft.worker_id} onChange={set("worker_id")} required>
+                    <option value="">Pick a person</option>
+                    {crew.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                  </select>
+                </Field>
+                <Field label="Hours"><input type="number" step="0.25" min="0.25" max="24" value={draft.hours} onChange={set("hours")} required /></Field>
+              </>
+            ) : (
+              <Field label="Amount ($)"><input type="number" step="0.01" min="0.01" value={draft.amount} onChange={set("amount")} required /></Field>
+            )}
+            {draft.kind === "payment" && (
+              <>
+                <Field label="Method">
+                  <select value={draft.method} onChange={set("method")}>
+                    {Object.entries(METHODS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                  </select>
+                </Field>
+                <Field label="Status">
+                  <select value={draft.status} onChange={set("status")}>
+                    <option value="received">Received</option>
+                    <option value="pending">Pending / on its way</option>
+                  </select>
+                </Field>
+                <Field label="Payment type">
+                  <select value={draft.payment_type} onChange={set("payment_type")}>
+                    {Object.entries(PAY_TYPES).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                  </select>
+                </Field>
+                {draft.method === "card" && <Field label="Card fee ($)"><input type="number" step="0.01" min="0" value={draft.processing_fee} onChange={set("processing_fee")} /></Field>}
+              </>
+            )}
+            {draft.kind === "cost" && (
+              <>
+                <Field label="Line">
+                  <select value={draft.line} onChange={set("line")}>
+                    {Object.entries(ENTRY_LINES).filter(([n]) => n !== "6" && n !== "10").map(([n, label]) => <option key={n} value={n}>{label}</option>)}
+                  </select>
+                </Field>
+                <Field label="Paid to"><input value={draft.payee} onChange={set("payee")} /></Field>
+              </>
+            )}
+            <Field label={draft.kind === "payment" && draft.status === "pending" ? "Expected date" : "Date"}><input type="date" value={draft.date} onChange={set("date")} required /></Field>
+            {draft.kind !== "hours" && (
+              <Field label={draft.kind === "cost" && draft.line === "11" ? "Reason (required)" : "Note"}>
+                <input value={draft.note} onChange={set("note")} required={draft.kind === "cost" && draft.line === "11"} />
+              </Field>
+            )}
+          </div>
+          <ErrorText error={saveError} />
+          <div className="row">
+            <button disabled={saving}>Save</button>
+            <button type="button" className="secondary" onClick={() => setDraft(null)}>Discard</button>
+          </div>
+        </form>
       )}
     </>
   );
