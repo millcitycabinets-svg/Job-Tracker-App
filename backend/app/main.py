@@ -1,4 +1,7 @@
 import os
+import re
+import time
+from difflib import SequenceMatcher
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -16,7 +19,7 @@ from . import audit  # noqa: F401  (registers the audit listener)
 from .auth import check_password, current_user, hash_password, owner_only, require
 from .db import Base, engine, get_db
 from .models import (BOX_RATE, JOB_STATUSES, LEDGER_LINES, MOD_RATE, ROLES, TRANSITIONS, AssemblyEntry, AuditLog, Job,
-                     LaborEntry, LedgerEntry, Reimbursement, User)
+                     DesignEntry, LaborEntry, LedgerEntry, Reimbursement, User)
 from .waterfall import compute, labor_total, money
 
 CREW_EDIT_WINDOW = timedelta(days=3)
@@ -64,11 +67,24 @@ def user_out(u: User, with_pay: bool = False):
     return out
 
 
+# shortcut: failed-login counts live in memory, so they reset on deploy and assume one app instance; move to the database if you scale out
+FAILED_LOGINS: dict[str, list[float]] = {}
+MAX_FAILED_LOGINS = 5
+LOCKOUT_SECONDS = 15 * 60
+
+
 @app.post("/api/login")
 def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
-    user = db.scalar(select(User).where(User.email == body.email.strip().lower()))
+    email = body.email.strip().lower()
+    cutoff = time.monotonic() - LOCKOUT_SECONDS
+    recent = [t for t in FAILED_LOGINS.get(email, []) if t > cutoff]
+    if len(recent) >= MAX_FAILED_LOGINS:
+        raise HTTPException(429, "Too many wrong passwords. Try again in 15 minutes.")
+    user = db.scalar(select(User).where(User.email == email))
     if not user or not user.active or not check_password(body.password, user.password_hash):
+        FAILED_LOGINS[email] = recent + [time.monotonic()]
         raise HTTPException(401, "Wrong email or password")
+    FAILED_LOGINS.pop(email, None)
     request.session["user_id"] = user.id
     return user_out(user)
 
@@ -192,7 +208,8 @@ def load_job(db: Session, job_id: int) -> Job:
         select(Job).where(Job.id == job_id)
         .options(selectinload(Job.ledger), selectinload(Job.labor).selectinload(LaborEntry.worker), selectinload(Job.rep),
                  selectinload(Job.assembly).selectinload(AssemblyEntry.worker),
-                 selectinload(Job.reimbursements).selectinload(Reimbursement.user))
+                 selectinload(Job.reimbursements).selectinload(Reimbursement.user),
+                 selectinload(Job.designs).selectinload(DesignEntry.designer))
     )
     if not job:
         raise HTTPException(404, "Job not found")
@@ -225,6 +242,7 @@ def job_out(job: Job):
         ],
         "assembly": [assembly_out(e) for e in job.assembly],
         "reimbursements": [reimbursement_out(r) for r in job.reimbursements],
+        "designs": [design_out(d) for d in job.designs],
     }
 
 
@@ -232,7 +250,7 @@ def job_out(job: Job):
 def list_jobs(status: str | None = None, rep_id: int | None = None, db: Session = Depends(get_db),
               _=Depends(owner_only)):
     q = select(Job).options(selectinload(Job.ledger), selectinload(Job.labor), selectinload(Job.rep),
-                            selectinload(Job.assembly), selectinload(Job.reimbursements))
+                            selectinload(Job.assembly), selectinload(Job.reimbursements), selectinload(Job.designs))
     if status:
         q = q.where(Job.status == status)
     if rep_id:
@@ -543,6 +561,115 @@ def delete_reimbursement(rid: int, db: Session = Depends(get_db), user: User = D
     db.delete(r)
     db.commit()
     return {"ok": True}
+
+
+# ---------- designs (designer logs; owner matches to jobs) ----------
+
+class DesignIn(BaseModel):
+    design_name: str = Field(min_length=1, max_length=200)
+    design_date: date | None = None
+    revisions: int = Field(default=0, ge=0)
+    charge: Decimal = Field(ge=0, le=100000)
+    note: str | None = None
+
+
+class DesignPatch(BaseModel):
+    design_name: str | None = Field(default=None, min_length=1, max_length=200)
+    design_date: date | None = None
+    revisions: int | None = Field(default=None, ge=0)
+    charge: Decimal | None = Field(default=None, ge=0, le=100000)
+    note: str | None = None
+
+
+class MatchIn(BaseModel):
+    job_id: int | None
+
+
+def design_out(d: DesignEntry):
+    return {"id": d.id, "designer": d.designer.name, "design_name": d.design_name, "design_date": d.design_date,
+            "revisions": d.revisions, "charge": str(d.charge), "note": d.note, "job_id": d.job_id,
+            "job": d.job.name if d.job else None}
+
+
+def _words(name: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", name.lower()))
+
+
+def name_score(a: str, b: str) -> float:
+    """0..1 likeness of a design name and a job name ("Selden kitchen" vs "Dustin Selden")."""
+    wa, wb = _words(a), _words(b)
+    overlap = len(wa & wb) / min(len(wa), len(wb)) if wa and wb else 0
+    return max(overlap, SequenceMatcher(None, a.lower(), b.lower()).ratio())
+
+
+def editable_design(db: Session, design_id: int, user: User) -> DesignEntry:
+    d = get_or_404(db, DesignEntry, design_id)
+    if user.role != "owner":
+        if d.designer_id != user.id:
+            raise HTTPException(404, "DesignEntry not found")
+        if d.job_id:
+            raise HTTPException(403, "This design is already matched to a job. Ask Skyler to change it.")
+    return d
+
+
+@app.post("/api/designs")
+def add_design(body: DesignIn, db: Session = Depends(get_db), user: User = Depends(require("designer"))):
+    d = DesignEntry(designer_id=user.id, design_name=body.design_name.strip(), design_date=body.design_date or date.today(),
+                    revisions=body.revisions, charge=body.charge, note=body.note)
+    db.add(d)
+    db.commit()
+    return design_out(d)
+
+
+@app.get("/api/designs/mine")
+def my_designs(db: Session = Depends(get_db), user: User = Depends(require("designer"))):
+    q = select(DesignEntry).where(DesignEntry.designer_id == user.id).order_by(DesignEntry.design_date.desc(), DesignEntry.id.desc())
+    return [design_out(d) for d in db.scalars(q)]
+
+
+@app.patch("/api/designs/{design_id}")
+def update_design(design_id: int, body: DesignPatch, db: Session = Depends(get_db),
+                  user: User = Depends(require("owner", "designer"))):
+    d = editable_design(db, design_id, user)
+    for k, v in body.model_dump(exclude_unset=True).items():
+        setattr(d, k, v.strip() if k == "design_name" else v)
+    db.commit()
+    return design_out(d)
+
+
+@app.delete("/api/designs/{design_id}")
+def delete_design(design_id: int, db: Session = Depends(get_db), user: User = Depends(require("owner", "designer"))):
+    db.delete(editable_design(db, design_id, user))
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/designs")
+def all_designs(unmatched: bool = False, db: Session = Depends(get_db), _=Depends(owner_only)):
+    q = select(DesignEntry).order_by(DesignEntry.design_date.desc(), DesignEntry.id.desc())
+    if unmatched:
+        q = q.where(DesignEntry.job_id.is_(None))
+    return [design_out(d) for d in db.scalars(q)]
+
+
+@app.post("/api/designs/{design_id}/match")
+def match_design(design_id: int, body: MatchIn, db: Session = Depends(get_db), _=Depends(owner_only)):
+    d = get_or_404(db, DesignEntry, design_id)
+    if body.job_id is not None:
+        get_or_404(db, Job, body.job_id)
+    d.job_id = body.job_id
+    db.commit()
+    return design_out(d)
+
+
+@app.get("/api/jobs/{job_id}/design-suggestions")
+def design_suggestions(job_id: int, db: Session = Depends(get_db), _=Depends(owner_only)):
+    job = get_or_404(db, Job, job_id)
+    names = [job.name] + ([job.customer] if job.customer else [])
+    scored = [(max(name_score(d.design_name, n) for n in names), d)
+              for d in db.scalars(select(DesignEntry).where(DesignEntry.job_id.is_(None)))]
+    scored = sorted((x for x in scored if x[0] >= 0.5), key=lambda x: -x[0])[:5]
+    return [{**design_out(d), "score": round(s, 2)} for s, d in scored]
 
 
 # ---------- approvals (owner) ----------

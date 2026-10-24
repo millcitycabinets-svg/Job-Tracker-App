@@ -85,14 +85,14 @@ export default function App() {
   const owner = me.role === "owner";
   const logout = () => api("/logout", { method: "POST" }).then(() => setMe(null));
   const nav = {
-    owner: [["/", "Jobs"], ["/hours", "Hours"], ["/assembly", "Assembly"], ["/approvals", "Approvals"], ["/team", "Team"]],
+    owner: [["/", "Jobs"], ["/hours", "Hours"], ["/assembly", "Assembly"], ["/designs", "Designs"], ["/approvals", "Approvals"], ["/team", "Team"]],
     crew: [["/", "Hours"], ["/assembly", "Assembly"], ["/reimbursements", "Reimbursements"]],
-    designer: [["/", "Reimbursements"]],
+    designer: [["/", "My designs"], ["/reimbursements", "Reimbursements"]],
   }[me.role] || [];
 
   let page;
   const jobMatch = hash.match(/^\/jobs\/(\d+)$/);
-  if (me.role === "designer") page = <Reimbursements />;
+  if (me.role === "designer") page = hash === "/reimbursements" ? <Reimbursements /> : <MyDesigns />;
   else if (me.role !== "owner" && me.role !== "crew") page = <p className="card">Your screens are coming soon.</p>;
   else if (hash === "/assembly") page = <Assembly me={me} />;
   else if (hash === "/reimbursements" && !owner) page = <Reimbursements />;
@@ -101,6 +101,7 @@ export default function App() {
   else if (hash === "/new") page = <NewJob />;
   else if (hash === "/hours") page = <LogHours me={me} />;
   else if (hash === "/approvals") page = <Approvals />;
+  else if (hash === "/designs") page = <DesignPipeline />;
   else if (hash === "/team") page = <Team />;
   else page = <JobsList />;
 
@@ -237,7 +238,7 @@ function NewJob() {
 }
 
 function JobDetail({ id }) {
-  const [job, error, , setJob] = useLoad(`/jobs/${id}`, [id]);
+  const [job, error, reloadJob, setJob] = useLoad(`/jobs/${id}`, [id]);
   const [editing, setEditing] = useState(null);
   const [open, setOpen] = useState(null);
   const reps = useReps();
@@ -261,6 +262,7 @@ function JobDetail({ id }) {
     ...job.ledger.filter((e) => e.line === n).map((e) => ({ ...e, kind: "ledger" })),
     ...(n === 6 ? job.labor.map((e) => ({ id: `l${e.id}`, laborId: e.id, amount: e.total, payee: e.worker, note: `${e.hours} h × ${usd(e.rate)}`, entry_date: e.work_date, kind: "labor" })) : []),
     ...(n === 5 ? job.assembly.filter(counted).map((e) => ({ id: `a${e.id}`, amount: e.total, payee: e.worker, note: `${e.boxes} boxes, ${e.modifications} mods${e.note ? ` · ${e.note}` : ""}`, entry_date: e.work_date })) : []),
+    ...(n === 8 ? job.designs.map((d) => ({ id: `d${d.id}`, amount: d.charge, payee: d.designer, note: `${d.design_name}${d.revisions ? ` · ${d.revisions} revision${d.revisions === 1 ? "" : "s"}` : ""}`, entry_date: d.design_date })) : []),
     ...(n === 4 ? job.reimbursements.filter(counted).map((r) => ({ id: `r${r.id}`, amount: r.amount, payee: r.user, note: `Reimbursement · ${r.purpose}`, entry_date: r.spent_on })) : []),
   ];
 
@@ -317,6 +319,7 @@ function JobDetail({ id }) {
         {w.margin_pct != null && <p className="muted">Net margin {w.margin_pct}% of adjusted revenue</p>}
       </section>
 
+      <JobDesigns job={job} reload={reloadJob} />
       <AddEntry jobId={id} onSaved={setJob} />
     </>
   );
@@ -776,6 +779,158 @@ function Approvals() {
             </ul>
           </div>
         ))}
+      </section>
+    </>
+  );
+}
+
+function JobDesigns({ job, reload }) {
+  const [suggestions, , reloadSuggestions] = useLoad(`/jobs/${job.id}/design-suggestions`, [job.id]);
+  const [link, busy, error] = useSubmit(async ([designId, jobId]) => {
+    await api(`/designs/${designId}/match`, { method: "POST", body: { job_id: jobId } });
+    reload();
+    reloadSuggestions();
+  });
+  if (!job.designs.length && !suggestions?.length) return null;
+  return (
+    <section className="card">
+      <h2>Designs</h2>
+      <ErrorText error={error} />
+      <ul className="list">
+        {job.designs.map((d) => (
+          <li key={d.id} className="row between entry-row">
+            <span>{d.design_name} <span className="muted">· {d.designer} · {d.design_date}</span></span>
+            <span>{usd(d.charge)} <button className="link" disabled={busy} onClick={() => link([d.id, null])}>Unlink</button></span>
+          </li>
+        ))}
+      </ul>
+      {suggestions?.length > 0 && (
+        <>
+          <p className="muted">Designs that look like this job:</p>
+          <ul className="list">
+            {suggestions.map((d) => (
+              <li key={d.id} className="row between entry-row">
+                <span>{d.design_name} <span className="muted">· {d.designer} · {d.design_date}</span></span>
+                <span>{usd(d.charge)} <button disabled={busy} onClick={() => link([d.id, job.id])}>Link</button></span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
+  );
+}
+
+function MyDesigns() {
+  const [mine, , reload] = useLoad("/designs/mine");
+  const blank = { design_name: "", design_date: today(), revisions: "", charge: "", note: "" };
+  const [form, setForm] = useState(blank);
+  const [done, setDone] = useState(null);
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  const [submit, busy, error] = useSubmit(async () => {
+    const saved = await api("/designs", { method: "POST", body: { ...form, revisions: Number(form.revisions || 0), note: form.note || null } });
+    setDone(`Logged ${saved.design_name}`);
+    setForm(blank);
+    reload();
+  });
+  const [remove, , removeError] = useSubmit(async (id) => {
+    if (confirm("Delete this design?")) {
+      await api(`/designs/${id}`, { method: "DELETE" });
+      reload();
+    }
+  });
+  const matched = (mine || []).filter((d) => d.job).length;
+  return (
+    <>
+      <form className="card" onSubmit={submit}>
+        <h1>Log a design</h1>
+        <div className="grid">
+          <Field label="Design name"><input value={form.design_name} onChange={set("design_name")} placeholder="Customer or project name" required /></Field>
+          <Field label="Date"><input type="date" value={form.design_date} max={today()} onChange={set("design_date")} required /></Field>
+          <Field label="Revisions"><input type="number" inputMode="numeric" min="0" value={form.revisions} onChange={set("revisions")} /></Field>
+          <Field label="Charge ($)"><input type="number" inputMode="decimal" step="0.01" min="0" value={form.charge} onChange={set("charge")} required /></Field>
+          <Field label="Note"><input value={form.note} onChange={set("note")} /></Field>
+        </div>
+        <ErrorText error={error} />
+        {done && <p className="ok" role="status">{done}</p>}
+        <button disabled={busy}>Save design</button>
+      </form>
+      <section className="card">
+        <div className="row between">
+          <h2>My designs</h2>
+          <span className="muted">{mine?.length || 0} logged · {matched} turned into jobs</span>
+        </div>
+        <ErrorText error={removeError} />
+        {mine?.length === 0 && <p className="muted">None yet.</p>}
+        <ul className="list">
+          {mine?.map((d) => (
+            <li key={d.id} className="entry-row">
+              <div className="row between">
+                <span>{d.design_date} · {d.design_name}</span>
+                <span>{usd(d.charge)}</span>
+              </div>
+              <div className="row between muted">
+                <span>{d.revisions ? `${d.revisions} revision${d.revisions === 1 ? "" : "s"} · ` : ""}{d.job ? `Job: ${d.job}` : "Not matched to a job yet"}</span>
+                {!d.job && <button className="link" onClick={() => remove(d.id)}>Delete</button>}
+              </div>
+            </li>
+          ))}
+        </ul>
+      </section>
+    </>
+  );
+}
+
+function DesignPipeline() {
+  const [designs, error, reload] = useLoad("/designs");
+  const [jobs] = useLoad("/job-names");
+  const [link, busy, linkError] = useSubmit(async ([designId, jobId]) => {
+    await api(`/designs/${designId}/match`, { method: "POST", body: { job_id: jobId } });
+    reload();
+  });
+  if (error) return <ErrorText error={error} />;
+  if (!designs) return <p className="muted">Loading…</p>;
+  const byDesigner = {};
+  for (const d of designs) (byDesigner[d.designer] ||= []).push(d);
+  const unmatched = designs.filter((d) => !d.job);
+  return (
+    <>
+      <h1>Designs</h1>
+      <section className="card">
+        <h2>Close rate</h2>
+        {designs.length === 0 && <p className="muted">No designs logged yet.</p>}
+        <table className="waterfall">
+          <tbody>
+            {Object.entries(byDesigner).map(([who, list]) => {
+              const won = list.filter((d) => d.job);
+              return (
+                <tr key={who}>
+                  <td>{who}</td>
+                  <td>{won.length} of {list.length} became jobs ({Math.round((won.length / list.length) * 100)}%)</td>
+                  <td className="amount">{usd(list.reduce((s, d) => s + Number(d.charge), 0))} charged</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </section>
+      <section className="card">
+        <h2>Not matched to a job ({unmatched.length})</h2>
+        <ErrorText error={linkError} />
+        <ul className="list">
+          {unmatched.map((d) => (
+            <li key={d.id} className="entry-row">
+              <div className="row between">
+                <span>{d.design_name} <span className="muted">· {d.designer} · {d.design_date}</span></span>
+                <span>{usd(d.charge)}</span>
+              </div>
+              <select disabled={busy} value="" onChange={(e) => e.target.value && link([d.id, Number(e.target.value)])} aria-label={`Link ${d.design_name} to a job`}>
+                <option value="">Link to a job…</option>
+                {jobs?.map((j) => <option key={j.id} value={j.id}>{j.name}</option>)}
+              </select>
+            </li>
+          ))}
+        </ul>
       </section>
     </>
   );

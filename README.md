@@ -9,6 +9,8 @@ Job profitability, crew hours and collections for Mill City Cabinetry. Spec: `do
 - Crew: log their own hours against a job picked from a list; see only their own hours, never dollars. Entries lock after 3 days.
 - Pay rates are copied onto each hours entry, so a rate change never rewrites past jobs.
 - Crew log assembly (boxes, modifications, extra cost) and submit reimbursements with a receipt photo; owner approves, rejects with a reason, and marks paid. Only approved entries count on a job. Fuel and other no-job reimbursements hit no job.
+- Designer logs each design (name, date, revisions, charge) before a job exists. Owner sees suggested matches on each job and links them with one tap; linked charges land on line 8. Designs page shows close rate per designer.
+- A login locks for 15 minutes after 5 wrong passwords.
 - Every create, edit and delete is recorded in an audit log (who, when, old and new value).
 
 ## Run locally

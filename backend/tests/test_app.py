@@ -10,12 +10,13 @@ from fastapi.testclient import TestClient
 
 from app.auth import hash_password
 from app.db import Base, SessionLocal, engine
-from app.main import app
+from app.main import FAILED_LOGINS, app, name_score
 from app.models import LaborEntry, User
 
 
 @pytest.fixture(autouse=True)
 def fresh_db():
+    FAILED_LOGINS.clear()
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     with SessionLocal() as db:
@@ -24,6 +25,7 @@ def fresh_db():
             User(name="Omar", email="omar@x.com", password_hash=hash_password("omarpass"), role="crew", hourly_rate=Decimal("40")),
             User(name="Jorge", email="jorge@x.com", password_hash=hash_password("jorgepass"), role="crew",
                  hourly_rate=Decimal("24.50")),
+            User(name="Jen", email="jen@x.com", password_hash=hash_password("jenpass1"), role="designer"),
             User(name="Drew", email="drew@x.com", password_hash=hash_password("drewpass1"), role="rep",
                  commission_rate=Decimal("0.30")),
         ])
@@ -217,3 +219,41 @@ def test_reimbursement_flow_and_privacy():
     assert [x["id"] for x in owner.get("/api/approvals").json()["reimbursements"]] == [fuel["id"]]
     log = owner.get("/api/audit?table=reimbursements").json()
     assert all("PNG" not in str(a["changes"]) for a in log)
+
+
+def test_design_matching_puts_charge_on_line_8():
+    owner = client("skyler@x.com", "ownerpass")
+    jid = make_job(owner)["id"]
+    jen = client("jen@x.com", "jenpass1")
+    selden = jen.post("/api/designs", json={"design_name": "Selden kitchen", "charge": "80"}).json()
+    jen.post("/api/designs", json={"design_name": "Garcia bath", "charge": "120", "revisions": 3})
+    assert len(jen.get("/api/designs/mine").json()) == 2
+    for path in ("/api/jobs", "/api/designs", f"/api/jobs/{jid}/design-suggestions"):
+        assert jen.get(path).status_code == 403, path
+    omar = client("omar@x.com", "omarpass")
+    assert omar.get("/api/designs/mine").status_code == 403
+    assert omar.patch(f"/api/designs/{selden['id']}", json={"charge": "1"}).status_code == 403
+
+    suggestions = owner.get(f"/api/jobs/{jid}/design-suggestions").json()
+    assert [s["design_name"] for s in suggestions] == ["Selden kitchen"]
+    owner.post(f"/api/designs/{selden['id']}/match", json={"job_id": jid})
+    job = owner.get(f"/api/jobs/{jid}").json()
+    assert line(job, 8) == "80.00" and job["designs"][0]["design_name"] == "Selden kitchen"
+    assert owner.get(f"/api/jobs/{jid}/design-suggestions").json() == []
+    assert jen.patch(f"/api/designs/{selden['id']}", json={"charge": "200"}).status_code == 403  # matched = locked
+    assert [d["design_name"] for d in owner.get("/api/designs?unmatched=true").json()] == ["Garcia bath"]
+    owner.post(f"/api/designs/{selden['id']}/match", json={"job_id": None})
+    assert line(owner.get(f"/api/jobs/{jid}").json(), 8) == "0.00"
+
+
+def test_name_score():
+    assert name_score("Selden kitchen", "Dustin Selden") >= 0.5
+    assert name_score("Garcia bath", "Dustin Selden") < 0.5
+
+
+def test_login_locks_after_five_wrong_passwords():
+    c = TestClient(app)
+    for _ in range(5):
+        assert c.post("/api/login", json={"email": "omar@x.com", "password": "wrong"}).status_code == 401
+    assert c.post("/api/login", json={"email": "omar@x.com", "password": "omarpass"}).status_code == 429
+    assert c.post("/api/login", json={"email": "jorge@x.com", "password": "jorgepass"}).status_code == 200

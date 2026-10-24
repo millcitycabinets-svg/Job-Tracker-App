@@ -54,6 +54,7 @@ class Job(Base):
     labor: Mapped[list["LaborEntry"]] = relationship(back_populates="job", order_by="LaborEntry.id")
     assembly: Mapped[list["AssemblyEntry"]] = relationship(viewonly=True, order_by="AssemblyEntry.id")
     reimbursements: Mapped[list["Reimbursement"]] = relationship(viewonly=True, order_by="Reimbursement.id")
+    designs: Mapped[list["DesignEntry"]] = relationship(viewonly=True, order_by="DesignEntry.id")
 
 
 class LedgerEntry(Base):
@@ -139,6 +140,24 @@ class Reimbursement(Base):
 
     job: Mapped[Job | None] = relationship()
     user: Mapped[User] = relationship()
+
+
+class DesignEntry(Base):
+    """A design Jen did, logged by name before any job exists. Matching it to a job puts its charge on line 8."""
+
+    __tablename__ = "designs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    designer_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    design_name: Mapped[str] = mapped_column(String(200))
+    design_date: Mapped[date] = mapped_column(Date)
+    revisions: Mapped[int] = mapped_column(Integer, default=0)
+    charge: Mapped[Decimal] = mapped_column(Money)
+    note: Mapped[str | None] = mapped_column(Text)
+    job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    designer: Mapped[User] = relationship()
+    job: Mapped[Job | None] = relationship()
 
 
 class AuditLog(Base):
