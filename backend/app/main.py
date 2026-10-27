@@ -948,6 +948,9 @@ def create_job_from(db: Session, p: dict, subject: str, owner: User) -> Job:
     return job
 
 
+SUBJECT_PREFIX = re.compile(r"^\s*((re|fwd?|fw)\s*:\s*)+", re.I)
+
+
 def route_email(db: Session, p: dict, thread_id: str | None, subject: str) -> tuple[str, Job | None]:
     owner = automation_user(db)
     if p.get("is_vendor_reply"):
@@ -964,6 +967,15 @@ def route_email(db: Session, p: dict, thread_id: str | None, subject: str) -> tu
             job.material_total = Decimal(str(p["material_total"]))
             return "material", job
         return "unmatched", job  # job already has a material total; let the owner decide
+
+    # The same order arrives as Delani's email and as copies/replies with the same subject: count it once.
+    core = SUBJECT_PREFIX.sub("", subject).strip().lower()
+    if core:
+        for prior in db.scalars(select(IntakeEmail).where(IntakeEmail.job_id.is_not(None),
+                                                          IntakeEmail.subject.ilike(f"%{core}%"))):
+            if SUBJECT_PREFIX.sub("", prior.subject).strip().lower() == core and not prior.parsed.get("is_vendor_reply"):
+                job = db.get(Job, prior.job_id)
+                return apply_to_job(db, job, {**p, "is_change_order": False}, owner), job
 
     name = (p.get("job_name") or subject.split(":", 1)[-1]).strip()
     job, score = best_job(db, name)

@@ -527,6 +527,9 @@ def test_ready_to_order_intake(monkeypatch):
     assert r["outcome"] == "attached" and r["job_id"] == jid
     send("v2", "Re: READY TO ORDER: Keith Olson - Centennial Vanity Add On", thread="t2", is_vendor_reply=True,
          material_total=500)
+    # The owner's copy of the same add-on (own thread, same subject) must not add the $1,200 again.
+    send("m2-copy", "READY TO ORDER: Keith Olson - Centennial Vanity Add On", thread="t2b",
+         job_name="Keith Olson - Centennial Vanity", is_change_order=True, invoice_total=1200, boxes=2)
     job = owner.get(f"/api/jobs/{jid}").json()
     assert job["rep_name"] == "Drew" and job["boxes"] == 12
     assert line(job, 3) == "10200.00" and line(job, 4) == "4300.00"
