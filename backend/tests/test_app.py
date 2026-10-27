@@ -215,6 +215,33 @@ def test_pay_types_box_rate_and_deliveries():
     assert client("jen@x.com", "jenpass1").get("/api/deliveries").status_code == 403
 
 
+def test_deliveries_from_calendar(monkeypatch):
+    owner = client("skyler@x.com", "ownerpass")
+    jid = make_job(owner, name="Dallin Hatch - Elissa")["id"]
+    monkeypatch.setenv("INTAKE_TOKEN", "secret")
+    bot = TestClient(app, headers={"x-intake-token": "secret"})
+
+    def event(eid, title, day="2026-10-13"):
+        r = bot.post("/api/intake/delivery", json={"event_id": eid, "title": title, "delivered_on": day})
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    assert TestClient(app).post("/api/intake/delivery", json={"event_id": "x", "title": "OUTBOUND - A",
+                                                              "delivered_on": "2026-10-13"}).status_code == 401
+    assert event("e0", "INBOUND - Dallin Hatch - Elissa")["outcome"] == "ignored"  # stock coming in, not a drop
+    assert event("e1", "OUTBOUND (PT 1 )- Dallin Hatch - Elissa") == {"outcome": "created", "job": "Dallin Hatch - Elissa"}
+    assert event("e2", "OUTBOUND (PT 2) - Dallin Hatch - Elissa", "2026-10-14")["outcome"] == "created"
+    assert event("e1", "OUTBOUND (PT 1 )- Dallin Hatch - Elissa", "2026-10-12")["outcome"] == "updated"  # moved, not doubled
+    assert event("e3", "DIRECT - Rugby Material to Karissa Abbott") == {"outcome": "created", "job": None}
+
+    owner.post("/api/deliveries", json={"job_id": jid, "driver_id": ids()["Jorge"], "delivered_on": "2026-10-20"})
+    assert event("e4", "OUTBOUND - Dallin Hatch - Elissa PT 3", "2026-10-20")["outcome"] == "linked"  # logged by hand too
+
+    data = owner.get("/api/deliveries").json()
+    assert {c["driver"]: c["total"] for c in data["counts"]} == {"Delivery team": 3, "Jorge": 1}
+    assert "DIRECT - Rugby Material to Karissa Abbott" in [d["job"] for d in data["deliveries"]]  # no job: show the title
+
+
 def test_reimbursement_flow_and_privacy():
     owner = client("skyler@x.com", "ownerpass")
     jid = make_job(owner)["id"]

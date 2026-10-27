@@ -133,19 +133,21 @@ class AssemblyEntry(Base):
 
 
 class Delivery(Base):
-    """A job dropped off by a delivery driver. Counted, not paid: drivers are salaried."""
+    """A drop-off: logged by a driver, or from an OUTBOUND / DIRECT event on the DELIVERY calendar. Counted, not paid."""
 
     __tablename__ = "deliveries"
     id: Mapped[int] = mapped_column(primary_key=True)
-    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"))
-    driver_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"))  # None = calendar title matched no job
+    driver_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))  # None = the delivery team (calendar)
     delivered_on: Mapped[date] = mapped_column(Date)
     note: Mapped[str | None] = mapped_column(Text)
+    title: Mapped[str | None] = mapped_column(String(300))  # calendar event title
+    calendar_event_id: Mapped[str | None] = mapped_column(String(300), unique=True)
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
-    job: Mapped[Job] = relationship()
-    driver: Mapped[User] = relationship(foreign_keys=[driver_id])
+    job: Mapped[Job | None] = relationship()
+    driver: Mapped[User | None] = relationship(foreign_keys=[driver_id])
 
 
 class Reimbursement(Base):

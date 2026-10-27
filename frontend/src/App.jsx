@@ -763,8 +763,8 @@ function Deliveries({ me }) {
               <li key={d.id} className="row between entry-row">
                 <span>{d.delivered_on} · {d.job}{d.note ? <span className="muted"> · {d.note}</span> : null}</span>
                 <span>
-                  {owner && <span className="muted">{d.driver} </span>}
-                  <button className="link" onClick={() => remove(d.id)}>Delete</button>
+                  <span className="muted">{d.from_calendar ? "Calendar" : d.driver} </span>
+                  {(owner || d.driver_id === me.id) && <button className="link" onClick={() => remove(d.id)}>Delete</button>}
                 </span>
               </li>
             ))}

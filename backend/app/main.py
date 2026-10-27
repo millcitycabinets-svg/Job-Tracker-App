@@ -521,9 +521,13 @@ class DeliveryIn(BaseModel):
     driver_id: int | None = None  # owner only
 
 
+TEAM = "Delivery team"  # calendar deliveries don't say who drove
+
+
 def delivery_out(d: Delivery):
-    return {"id": d.id, "job_id": d.job_id, "job": d.job.name, "driver_id": d.driver_id, "driver": d.driver.name,
-            "delivered_on": d.delivered_on, "note": d.note}
+    return {"id": d.id, "job_id": d.job_id, "job": d.job.name if d.job else d.title, "driver_id": d.driver_id,
+            "driver": d.driver.name if d.driver else TEAM, "delivered_on": d.delivered_on, "note": d.note,
+            "from_calendar": d.calendar_event_id is not None}
 
 
 @app.post("/api/deliveries")
@@ -549,7 +553,8 @@ def list_deliveries(db: Session = Depends(get_db), user: User = Depends(require(
     today = date.today()
     counts: dict[str, dict] = {}
     for d in rows:
-        c = counts.setdefault(d.driver.name, {"driver": d.driver.name, "week": 0, "month": 0, "total": 0})
+        who = d.driver.name if d.driver else TEAM
+        c = counts.setdefault(who, {"driver": who, "week": 0, "month": 0, "total": 0})
         c["total"] += 1
         c["week"] += bucket_start(d.delivered_on, "week") == bucket_start(today, "week")
         c["month"] += (d.delivered_on.year, d.delivered_on.month) == (today.year, today.month)
@@ -976,6 +981,54 @@ def intake_out(e: IntakeEmail):
             "job": e.job.name if e.job else None, "parsed": e.parsed, "created_at": e.created_at}
 
 
+def check_intake_token(request: Request):
+    token = os.environ.get("INTAKE_TOKEN")
+    if not token:
+        raise HTTPException(503, "INTAKE_TOKEN is not set on the app")
+    if not hmac.compare_digest(request.headers.get("x-intake-token", ""), token):
+        raise HTTPException(401, "Bad intake token")
+
+
+DELIVERY_PREFIX = re.compile(r"^\s*(OUTBOUND|DIRECT)\b[^-–]*[-–]\s*", re.I)  # "OUTBOUND (PT 1 )- Dallin Hatch"
+PART_SUFFIX = re.compile(r"\s*\(?\s*PT\.?\s*\d+\s*\)?\s*$", re.I)  # "Jamie Reyna PT 3"
+
+
+class CalendarDeliveryIn(BaseModel):
+    event_id: str = Field(min_length=1, max_length=300)
+    title: str = Field(max_length=300)
+    delivered_on: date
+
+
+@app.post("/api/intake/delivery")
+def intake_delivery(body: CalendarDeliveryIn, request: Request, db: Session = Depends(get_db)):
+    """An ended event on the DELIVERY calendar. OUTBOUND and DIRECT are drop-offs; INBOUND is stock coming in."""
+    check_intake_token(request)
+    if not DELIVERY_PREFIX.match(body.title):
+        return {"outcome": "ignored"}
+    name = PART_SUFFIX.sub("", DELIVERY_PREFIX.sub("", body.title)).strip()
+    job, score = None, 0.0
+    for j in db.scalars(select(Job)):
+        s = 1.0 if j.name.lower() == name.lower() else name_score(name, j.name)
+        if s > score:
+            job, score = j, s
+    job = job if score >= 0.75 else None
+
+    d = db.scalar(select(Delivery).where(Delivery.calendar_event_id == body.event_id))
+    outcome = "updated"
+    if not d and job:  # a driver may have logged this drop by hand already
+        d = db.scalar(select(Delivery).where(Delivery.job_id == job.id, Delivery.delivered_on == body.delivered_on,
+                                             Delivery.calendar_event_id.is_(None)))
+        outcome = "linked"
+    if not d:
+        d = Delivery(driver_id=None, created_by=automation_user(db).id)
+        db.add(d)
+        outcome = "created"
+    d.calendar_event_id, d.title, d.delivered_on = body.event_id, body.title, body.delivered_on
+    d.job_id = job.id if job else d.job_id
+    db.commit()
+    return {"outcome": outcome, "job": job.name if job else None}
+
+
 @app.post("/api/intake/email")
 async def intake_email(
     request: Request,
@@ -988,11 +1041,7 @@ async def intake_email(
     pdf: list[UploadFile] = File(default=[]),  # every PDF on the email; repeat the field for each
     db: Session = Depends(get_db),
 ):
-    token = os.environ.get("INTAKE_TOKEN")
-    if not token:
-        raise HTTPException(503, "INTAKE_TOKEN is not set on the app")
-    if not hmac.compare_digest(request.headers.get("x-intake-token", ""), token):
-        raise HTTPException(401, "Bad intake token")
+    check_intake_token(request)
     seen = db.scalar(select(IntakeEmail).where(IntakeEmail.message_id == message_id))
     if seen:
         return {**intake_out(seen), "duplicate": True}
