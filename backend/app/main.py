@@ -19,8 +19,8 @@ from starlette.middleware.sessions import SessionMiddleware
 from . import audit, inbox, migrate  # noqa: F401  (audit registers its listener)
 from .auth import check_password, current_user, hash_password, owner_only, require
 from .db import get_db
-from .models import (BOX_RATE, JOB_STATUSES, LEDGER_LINES, MOD_RATE, ROLES, TRANSITIONS, AssemblyEntry, AuditLog, Job,
-                     PAYMENT_METHODS, PAYMENT_TYPES, DesignEntry, IntakeEmail, LaborEntry, LedgerEntry, Payment, Reimbursement, User)
+from .models import (BOX_RATE, JOB_STATUSES, LEDGER_LINES, MOD_RATE, PAY_TYPES, ROLES, TRANSITIONS, AssemblyEntry, AuditLog,
+                     Delivery, Job, PAYMENT_METHODS, PAYMENT_TYPES, DesignEntry, IntakeEmail, LaborEntry, LedgerEntry, Payment, Reimbursement, User)
 from .waterfall import compute, labor_total, money
 
 
@@ -59,9 +59,10 @@ class LoginIn(BaseModel):
 
 
 def user_out(u: User, with_pay: bool = False):
-    out = {"id": u.id, "name": u.name, "email": u.email, "role": u.role, "active": u.active}
+    out = {"id": u.id, "name": u.name, "email": u.email, "role": u.role, "active": u.active, "pay_type": u.pay_type}
     if with_pay:
         out["hourly_rate"] = str(u.hourly_rate) if u.hourly_rate is not None else None
+        out["box_rate"] = str(u.box_rate if u.box_rate is not None else BOX_RATE)
         out["commission_rate"] = str(u.commission_rate) if u.commission_rate is not None else None
     return out
 
@@ -108,6 +109,8 @@ class UserIn(BaseModel):
     role: str
     hourly_rate: Decimal | None = Field(default=None, ge=0)
     commission_rate: Decimal | None = Field(default=None, ge=0, le=1)
+    pay_type: str = "hourly"
+    box_rate: Decimal | None = Field(default=None, ge=0)
 
 
 class UserPatch(BaseModel):
@@ -117,11 +120,15 @@ class UserPatch(BaseModel):
     hourly_rate: Decimal | None = Field(default=None, ge=0)
     commission_rate: Decimal | None = Field(default=None, ge=0, le=1)
     active: bool | None = None
+    pay_type: str | None = None
+    box_rate: Decimal | None = Field(default=None, ge=0)
 
 
-def check_role(role):
+def check_role(role, pay_type=None):
     if role is not None and role not in ROLES:
         raise HTTPException(422, f"role must be one of {ROLES}")
+    if pay_type is not None and pay_type not in PAY_TYPES:
+        raise HTTPException(422, f"pay_type must be one of {PAY_TYPES}")
 
 
 @app.get("/api/users")
@@ -131,12 +138,13 @@ def list_users(db: Session = Depends(get_db), _=Depends(owner_only)):
 
 @app.post("/api/users")
 def create_user(body: UserIn, db: Session = Depends(get_db), _=Depends(owner_only)):
-    check_role(body.role)
+    check_role(body.role, body.pay_type)
     email = body.email.strip().lower()
     if db.scalar(select(User).where(User.email == email)):
         raise HTTPException(409, "That email already has a login")
     u = User(name=body.name.strip(), email=email, password_hash=hash_password(body.password), role=body.role,
-             hourly_rate=body.hourly_rate, commission_rate=body.commission_rate)
+             hourly_rate=body.hourly_rate, commission_rate=body.commission_rate,
+             pay_type=body.pay_type, box_rate=body.box_rate)
     db.add(u)
     db.commit()
     return user_out(u, with_pay=True)
@@ -146,7 +154,7 @@ def create_user(body: UserIn, db: Session = Depends(get_db), _=Depends(owner_onl
 def update_user(user_id: int, body: UserPatch, db: Session = Depends(get_db), _=Depends(owner_only)):
     u = get_or_404(db, User, user_id)
     data = body.model_dump(exclude_unset=True)
-    check_role(data.get("role"))
+    check_role(data.get("role"), data.get("pay_type"))
     if "password" in data:
         u.password_hash = hash_password(data.pop("password"))
     for k, v in data.items():
@@ -410,6 +418,8 @@ def add_labor(body: LaborIn, db: Session = Depends(get_db), user: User = Depends
         worker = get_or_404(db, User, body.worker_id)
     else:
         worker = user  # crew can only log their own hours
+    if worker.pay_type == "salary":
+        raise HTTPException(422, f"{worker.name} is salaried; hours aren't tracked")
     if worker.hourly_rate is None:
         raise HTTPException(422, f"{worker.name} has no hourly rate set")
     e = LaborEntry(job_id=body.job_id, worker_id=worker.id, work_date=body.work_date or date.today(),
@@ -479,7 +489,7 @@ def add_assembly(body: AssemblyIn, db: Session = Depends(get_db), user: User = D
         worker = get_or_404(db, User, body.worker_id)
     e = AssemblyEntry(job_id=body.job_id, worker_id=worker.id, work_date=body.work_date or date.today(),
                       boxes=body.boxes, modifications=body.modifications, extra_cost=body.extra_cost, note=body.note,
-                      box_rate=BOX_RATE, mod_rate=MOD_RATE,
+                      box_rate=worker.box_rate if worker.box_rate is not None else BOX_RATE, mod_rate=MOD_RATE,
                       status="approved" if user.role == "owner" else "submitted")
     db.add(e)
     db.commit()
@@ -498,6 +508,60 @@ def delete_assembly(entry_id: int, db: Session = Depends(get_db), user: User = D
     if user.role != "owner" and (e.worker_id != user.id or e.status != "submitted"):
         raise HTTPException(403, "Only entries waiting for approval can be deleted")
     db.delete(e)
+    db.commit()
+    return {"ok": True}
+
+
+# ---------- deliveries (drivers log drop-offs; counted, not paid) ----------
+
+class DeliveryIn(BaseModel):
+    job_id: int
+    delivered_on: date | None = None
+    note: str | None = None
+    driver_id: int | None = None  # owner only
+
+
+def delivery_out(d: Delivery):
+    return {"id": d.id, "job_id": d.job_id, "job": d.job.name, "driver_id": d.driver_id, "driver": d.driver.name,
+            "delivered_on": d.delivered_on, "note": d.note}
+
+
+@app.post("/api/deliveries")
+def add_delivery(body: DeliveryIn, db: Session = Depends(get_db), user: User = Depends(require("owner", "crew"))):
+    get_or_404(db, Job, body.job_id)
+    driver = get_or_404(db, User, body.driver_id) if user.role == "owner" and body.driver_id else user
+    when = body.delivered_on or date.today()
+    if db.scalar(select(Delivery).where(Delivery.job_id == body.job_id, Delivery.driver_id == driver.id,
+                                        Delivery.delivered_on == when)):
+        raise HTTPException(409, "That delivery is already logged")
+    d = Delivery(job_id=body.job_id, driver_id=driver.id, delivered_on=when, note=body.note, created_by=user.id)
+    db.add(d)
+    db.commit()
+    return delivery_out(d)
+
+
+@app.get("/api/deliveries")
+def list_deliveries(db: Session = Depends(get_db), user: User = Depends(require("owner", "crew"))):
+    q = select(Delivery).options(selectinload(Delivery.job), selectinload(Delivery.driver))
+    if user.role != "owner":
+        q = q.where(Delivery.driver_id == user.id)
+    rows = list(db.scalars(q.order_by(Delivery.delivered_on.desc(), Delivery.id.desc())))
+    today = date.today()
+    counts: dict[str, dict] = {}
+    for d in rows:
+        c = counts.setdefault(d.driver.name, {"driver": d.driver.name, "week": 0, "month": 0, "total": 0})
+        c["total"] += 1
+        c["week"] += bucket_start(d.delivered_on, "week") == bucket_start(today, "week")
+        c["month"] += (d.delivered_on.year, d.delivered_on.month) == (today.year, today.month)
+    return {"deliveries": [delivery_out(d) for d in rows[:300]], "counts": sorted(counts.values(), key=lambda c: c["driver"])}
+
+
+@app.delete("/api/deliveries/{did}")
+def delete_delivery(did: int, db: Session = Depends(get_db), user: User = Depends(require("owner", "crew"))):
+    d = get_or_404(db, Delivery, did)
+    if user.role != "owner" and d.driver_id != user.id:
+        raise HTTPException(403, "Not your delivery")
+    db.delete(d)
     db.commit()
     return {"ok": True}
 

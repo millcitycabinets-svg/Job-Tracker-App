@@ -7,6 +7,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .db import Base
 
 ROLES = ("owner", "designer", "crew", "rep")
+# How crew get paid: hourly logs hours, per_box logs assembly at their box rate, salary logs deliveries only.
+PAY_TYPES = ("hourly", "per_box", "salary")
 JOB_STATUSES = ("Ordered", "Assembled", "Delivered", "Installed", "Punch", "Closed")
 # Waterfall lines the owner can post ledger entries to (see waterfall.py for the full list).
 LEDGER_LINES = (2, 4, 5, 6, 7, 8, 9, 10, 11)
@@ -28,6 +30,8 @@ class User(Base):
     hourly_rate: Mapped[Decimal | None] = mapped_column(Money)
     commission_rate: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))  # 0.30 = 30%
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    pay_type: Mapped[str] = mapped_column(String(20), default="hourly", server_default="hourly")
+    box_rate: Mapped[Decimal | None] = mapped_column(Money)  # per_box crew; None = the standard BOX_RATE
 
 
 class Job(Base):
@@ -126,6 +130,22 @@ class AssemblyEntry(Base):
     @property
     def total(self) -> Decimal:
         return self.boxes * self.box_rate + self.modifications * self.mod_rate + (self.extra_cost or 0)
+
+
+class Delivery(Base):
+    """A job dropped off by a delivery driver. Counted, not paid: drivers are salaried."""
+
+    __tablename__ = "deliveries"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id"))
+    driver_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    delivered_on: Mapped[date] = mapped_column(Date)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+    job: Mapped[Job] = relationship()
+    driver: Mapped[User] = relationship(foreign_keys=[driver_id])
 
 
 class Reimbursement(Base):

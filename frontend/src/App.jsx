@@ -85,20 +85,28 @@ export default function App() {
 
   const owner = me.role === "owner";
   const logout = () => api("/logout", { method: "POST" }).then(() => setMe(null));
+  // Crew screens follow how they're paid: hourly log hours, per box log assembly, salaried drivers log deliveries.
+  const crewNav = {
+    hourly: [["/", "Hours"], ["/assembly", "Assembly"], ["/pay", "My pay"], ["/reimbursements", "Reimbursements"]],
+    per_box: [["/", "Assembly"], ["/pay", "My pay"], ["/reimbursements", "Reimbursements"]],
+    salary: [["/", "Deliveries"], ["/reimbursements", "Reimbursements"]],
+  }[me.pay_type] || [];
   const nav = {
-    owner: [["/", "Home"], ["/jobs", "Jobs"], ["/inbox", "Quick log"], ["/hours", "Hours"], ["/assembly", "Assembly"], ["/collections", "Collections"], ["/designs", "Designs"], ["/approvals", "Approvals"], ["/team", "Team"]],
-    crew: [["/", "Hours"], ["/assembly", "Assembly"], ["/pay", "My pay"], ["/reimbursements", "Reimbursements"]],
+    owner: [["/", "Home"], ["/jobs", "Jobs"], ["/inbox", "Quick log"], ["/hours", "Hours"], ["/assembly", "Assembly"], ["/deliveries", "Deliveries"], ["/collections", "Collections"], ["/designs", "Designs"], ["/approvals", "Approvals"], ["/team", "Team"]],
+    crew: crewNav,
     designer: [["/", "My designs"], ["/pay", "My pay"], ["/reimbursements", "Reimbursements"]],
   }[me.role] || [];
+  const crewHome = { per_box: <Assembly me={me} />, salary: <Deliveries me={me} /> }[me.pay_type] || <LogHours me={me} />;
 
   let page;
   const jobMatch = hash.match(/^\/jobs\/(\d+)$/);
   if (me.role === "designer") page = hash === "/reimbursements" ? <Reimbursements /> : hash === "/pay" ? <MyPay /> : <MyDesigns />;
   else if (me.role !== "owner" && me.role !== "crew") page = <p className="card">Your screens are coming soon.</p>;
-  else if (hash === "/assembly") page = <Assembly me={me} />;
+  else if (hash === "/assembly" && me.pay_type !== "salary") page = <Assembly me={me} />;
+  else if (hash === "/deliveries" && (owner || me.pay_type === "salary")) page = <Deliveries me={me} />;
   else if (hash === "/reimbursements" && !owner) page = <Reimbursements />;
-  else if (hash === "/pay" && !owner) page = <MyPay />;
-  else if (!owner) page = <LogHours me={me} />;
+  else if (hash === "/pay" && !owner && me.pay_type !== "salary") page = <MyPay />;
+  else if (!owner) page = crewHome;
   else if (jobMatch) page = <JobDetail id={jobMatch[1]} />;
   else if (hash === "/new") page = <NewJob />;
   else if (hash === "/hours") page = <LogHours me={me} />;
@@ -386,7 +394,7 @@ function LogHours({ me }) {
   const [jobs] = useLoad("/job-names");
   const [users] = useLoad(owner ? "/users" : "/me");
   const [mine, , reloadMine] = useLoad("/labor/mine");
-  const crew = owner ? (users || []).filter((u) => u.role === "crew" && u.active) : [];
+  const crew = owner ? (users || []).filter((u) => u.role === "crew" && u.active && u.pay_type === "hourly") : [];
   const blank = { job_id: "", hours: "", work_date: today(), worker_id: "" };
   const [form, setForm] = useState(blank);
   const [done, setDone] = useState(null);
@@ -490,11 +498,12 @@ function MyHours({ entries, jobs, reload }) {
 
 function Team() {
   const [users, error, reload] = useLoad("/users");
-  const blank = { name: "", email: "", password: "", role: "crew", hourly_rate: "", commission_rate: "" };
+  const blank = { name: "", email: "", password: "", role: "crew", pay_type: "hourly", hourly_rate: "", box_rate: "", commission_rate: "" };
   const [form, setForm] = useState(blank);
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   const [submit, busy, addError] = useSubmit(async () => {
-    const body = { ...form, hourly_rate: form.hourly_rate || null, commission_rate: form.commission_rate ? Number(form.commission_rate) / 100 : null };
+    const body = { ...form, hourly_rate: form.hourly_rate || null, box_rate: form.box_rate || null,
+                   commission_rate: form.commission_rate ? Number(form.commission_rate) / 100 : null };
     await api("/users", { method: "POST", body });
     setForm(blank);
     reload();
@@ -504,12 +513,20 @@ function Team() {
     reload();
   });
   const editRate = (u) => {
-    const field = u.role === "rep" ? "commission_rate" : "hourly_rate";
-    const current = u.role === "rep" ? (u.commission_rate ? Number(u.commission_rate) * 100 : "") : u.hourly_rate ?? "";
-    const value = prompt(u.role === "rep" ? `${u.name} commission %` : `${u.name} hourly rate ($)`, current);
-    if (value === null || value === "") return;
-    patch([u, { [field]: u.role === "rep" ? Number(value) / 100 : value }]);
+    if (u.role === "rep") {
+      const value = prompt(`${u.name} commission %`, u.commission_rate ? Number(u.commission_rate) * 100 : "");
+      if (value) patch([u, { commission_rate: Number(value) / 100 }]);
+      return;
+    }
+    const field = u.pay_type === "per_box" ? "box_rate" : "hourly_rate";
+    const value = prompt(u.pay_type === "per_box" ? `${u.name} pay per box ($)` : `${u.name} hourly rate ($)`, u[field] ?? "");
+    if (value) patch([u, { [field]: value }]);
   };
+  const crewPay = (u) => ({
+    hourly: u.hourly_rate ? `${usd(u.hourly_rate)}/h` : "Hourly · no rate set",
+    per_box: `${usd(u.box_rate)} per box`,
+    salary: "Salary · deliveries only",
+  })[u.pay_type];
   const resetPassword = (u) => {
     const value = prompt(`New password for ${u.name} (8+ characters)`);
     if (value) patch([u, { password: value }]);
@@ -529,11 +546,19 @@ function Team() {
             <div className="muted">{u.email}</div>
             <div className="row between">
               <span>
-                {u.role === "crew" && (u.hourly_rate ? `${usd(u.hourly_rate)}/h` : "No rate set")}
+                {u.role === "crew" && crewPay(u)}
                 {u.role === "rep" && (u.commission_rate ? `${Number(u.commission_rate) * 100}% commission` : "No commission set")}
               </span>
               <span>
-                {(u.role === "crew" || u.role === "rep") && <button className="link" onClick={() => editRate(u)}>Rate</button>}
+                {u.role === "crew" && (
+                  <select aria-label={`${u.name} pay type`} value={u.pay_type} onChange={(e) => patch([u, { pay_type: e.target.value }])}
+                          style={{ width: "auto", minHeight: 32, padding: "0.2rem 0.4rem" }}>
+                    <option value="hourly">Hourly</option>
+                    <option value="per_box">Per box</option>
+                    <option value="salary">Salary (delivery)</option>
+                  </select>
+                )}
+                {(u.role === "rep" || (u.role === "crew" && u.pay_type !== "salary")) && <button className="link" onClick={() => editRate(u)}>Rate</button>}
                 <button className="link" onClick={() => resetPassword(u)}>Password</button>
                 {u.role !== "owner" && (
                   <button className="link" onClick={() => patch([u, { active: !u.active }])}>{u.active ? "Deactivate" : "Reactivate"}</button>
@@ -557,7 +582,17 @@ function Team() {
               <option value="owner">Owner</option>
             </select>
           </Field>
-          {form.role === "crew" && <Field label="Hourly rate ($)"><input type="number" step="0.01" min="0" value={form.hourly_rate} onChange={set("hourly_rate")} /></Field>}
+          {form.role === "crew" && (
+            <Field label="Paid">
+              <select value={form.pay_type} onChange={set("pay_type")}>
+                <option value="hourly">Hourly (install)</option>
+                <option value="per_box">Per box (assembly)</option>
+                <option value="salary">Salary (delivery)</option>
+              </select>
+            </Field>
+          )}
+          {form.role === "crew" && form.pay_type === "hourly" && <Field label="Hourly rate ($)"><input type="number" step="0.01" min="0" value={form.hourly_rate} onChange={set("hourly_rate")} /></Field>}
+          {form.role === "crew" && form.pay_type === "per_box" && <Field label="Pay per box ($)"><input type="number" step="0.01" min="0" placeholder="20" value={form.box_rate} onChange={set("box_rate")} /></Field>}
           {form.role === "rep" && <Field label="Commission (%)"><input type="number" step="1" min="0" max="100" value={form.commission_rate} onChange={set("commission_rate")} /></Field>}
         </div>
         <ErrorText error={addError} />
@@ -572,7 +607,7 @@ function Assembly({ me }) {
   const [jobs] = useLoad("/job-names");
   const [users] = useLoad(owner ? "/users" : "/me");
   const [mine, , reloadMine] = useLoad("/assembly/mine");
-  const crew = owner ? (users || []).filter((u) => u.role === "crew" && u.active) : [];
+  const crew = owner ? (users || []).filter((u) => u.role === "crew" && u.active && u.pay_type !== "salary") : [];
   const blank = { job_id: "", boxes: "", modifications: "", extra_cost: "", note: "", work_date: today(), worker_id: "" };
   const [form, setForm] = useState(blank);
   const [done, setDone] = useState(null);
@@ -648,6 +683,89 @@ function Assembly({ me }) {
                     {e.status === "submitted" && <button className="link" onClick={() => remove(e.id)}>Delete</button>}
                   </span>
                 </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </>
+  );
+}
+
+function Deliveries({ me }) {
+  const owner = me.role === "owner";
+  const [jobs] = useLoad("/job-names");
+  const [users] = useLoad(owner ? "/users" : "/me");
+  const [data, , reload] = useLoad("/deliveries");
+  const drivers = owner ? (users || []).filter((u) => u.role === "crew" && u.active && u.pay_type === "salary") : [];
+  const blank = { job_id: "", delivered_on: today(), driver_id: "", note: "" };
+  const [form, setForm] = useState(blank);
+  const [done, setDone] = useState(null);
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+  const [submit, busy, error] = useSubmit(async () => {
+    const body = { job_id: Number(form.job_id), delivered_on: form.delivered_on, note: form.note || null };
+    if (owner) body.driver_id = Number(form.driver_id);
+    const saved = await api("/deliveries", { method: "POST", body });
+    setDone(`Logged: ${saved.job}`);
+    setForm({ ...blank, driver_id: form.driver_id });
+    reload();
+  });
+  const [remove, , removeError] = useSubmit(async (id) => {
+    if (confirm("Delete this delivery?")) {
+      await api(`/deliveries/${id}`, { method: "DELETE" });
+      reload();
+    }
+  });
+
+  return (
+    <>
+      <form className="card" onSubmit={submit}>
+        <h1>Log a delivery</h1>
+        <div className="grid">
+          {owner && (
+            <Field label="Driver">
+              <select value={form.driver_id} onChange={set("driver_id")} required>
+                <option value="">Pick a driver</option>
+                {drivers.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+              </select>
+            </Field>
+          )}
+          <Field label="Job">
+            <select value={form.job_id} onChange={set("job_id")} required>
+              <option value="">Pick a job</option>
+              {jobs?.map((j) => <option key={j.id} value={j.id}>{j.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Date"><input type="date" value={form.delivered_on} max={today()} onChange={set("delivered_on")} required /></Field>
+          <Field label="Note"><input value={form.note} onChange={set("note")} /></Field>
+        </div>
+        <ErrorText error={error} />
+        {done && <p className="ok" role="status">{done}</p>}
+        <button disabled={busy}>Save delivery</button>
+      </form>
+      {data?.counts.length > 0 && (
+        <section className="card">
+          <h2>Jobs delivered</h2>
+          <div className="scroll"><table className="grid-table">
+            <thead><tr><th>Driver</th><th>Week</th><th>Month</th><th>Total</th></tr></thead>
+            <tbody>
+              {data.counts.map((c) => <tr key={c.driver}><th>{c.driver}</th><td>{c.week}</td><td>{c.month}</td><td>{c.total}</td></tr>)}
+            </tbody>
+          </table></div>
+        </section>
+      )}
+      {data?.deliveries.length > 0 && (
+        <section className="card">
+          <h2>Recent deliveries</h2>
+          <ErrorText error={removeError} />
+          <ul className="list">
+            {data.deliveries.map((d) => (
+              <li key={d.id} className="row between entry-row">
+                <span>{d.delivered_on} · {d.job}{d.note ? <span className="muted"> · {d.note}</span> : null}</span>
+                <span>
+                  {owner && <span className="muted">{d.driver} </span>}
+                  <button className="link" onClick={() => remove(d.id)}>Delete</button>
+                </span>
               </li>
             ))}
           </ul>

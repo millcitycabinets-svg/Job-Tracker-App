@@ -191,6 +191,30 @@ def test_assembly_counts_only_after_approval():
     assert client("jorge@x.com", "jorgepass").get("/api/assembly/mine").json() == []
 
 
+def test_pay_types_box_rate_and_deliveries():
+    owner = client("skyler@x.com", "ownerpass")
+    jid = make_job(owner)["id"]
+    u = ids()
+    assert owner.patch(f"/api/users/{u['Omar']}", json={"pay_type": "per_box", "box_rate": "25"}).status_code == 200
+    assert owner.patch(f"/api/users/{u['Omar']}", json={"pay_type": "weekly"}).status_code == 422
+    omar = client("omar@x.com", "omarpass")
+    assert omar.get("/api/me").json()["pay_type"] == "per_box"
+    assert omar.post("/api/assembly", json={"job_id": jid, "boxes": 10, "modifications": 1}).json()["total"] == "300.00"
+
+    owner.patch(f"/api/users/{u['Jorge']}", json={"pay_type": "salary"})
+    jorge = client("jorge@x.com", "jorgepass")
+    assert jorge.post("/api/labor", json={"job_id": jid, "hours": 3}).status_code == 422  # salaried: no hours
+    assert jorge.post("/api/deliveries", json={"job_id": jid}).status_code == 200
+    assert jorge.post("/api/deliveries", json={"job_id": jid}).status_code == 409  # same drop twice
+    assert owner.post("/api/deliveries", json={"job_id": jid, "driver_id": u["Omar"]}).json()["driver"] == "Omar"
+    mine = jorge.get("/api/deliveries").json()
+    assert [c["total"] for c in mine["counts"]] == [1] and len(mine["deliveries"]) == 1  # drivers see only their own
+    counts = {c["driver"]: c for c in owner.get("/api/deliveries").json()["counts"]}
+    assert counts["Jorge"]["week"] == 1 and counts["Omar"]["month"] == 1
+    assert omar.delete(f"/api/deliveries/{mine['deliveries'][0]['id']}").status_code == 403
+    assert client("jen@x.com", "jenpass1").get("/api/deliveries").status_code == 403
+
+
 def test_reimbursement_flow_and_privacy():
     owner = client("skyler@x.com", "ownerpass")
     jid = make_job(owner)["id"]
@@ -342,6 +366,8 @@ def test_migrations_match_models_and_adopt_old_databases():
     Base.metadata.create_all(engine)
     with engine.begin() as conn:
         conn.execute(text("DROP TABLE intake_emails"))  # added after migrations existed
+        conn.execute(text("DROP TABLE deliveries"))
+        conn.execute(text("ALTER TABLE users DROP COLUMN pay_type, DROP COLUMN box_rate"))
         for table in ("labor", "designs"):  # approval columns also came later
             conn.execute(text(f"ALTER TABLE {table} DROP COLUMN status, DROP COLUMN status_note, DROP COLUMN paid_at"))
         conn.execute(text("DROP TABLE payments"))
