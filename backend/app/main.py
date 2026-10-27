@@ -1130,6 +1130,12 @@ def last_buckets(today_: date, period: str, count: int) -> list[date]:
     return starts
 
 
+def commission_is_due(job: Job, w: dict) -> bool:
+    """Closed, paid in full, every cost approved, not frozen and not already paid."""
+    return (job.status == "Closed" and not job.frozen and not job.commission_paid_at
+            and Decimal(w["balance_due"]) <= 0 and not w["costs_waiting"] and Decimal(w["commission"]) > 0)
+
+
 @app.get("/api/collections")
 def collections(period: str = "week", count: int = 8, db: Session = Depends(get_db), _=Depends(owner_only)):
     if period not in PERIODS:
@@ -1168,8 +1174,7 @@ def collections(period: str = "week", count: int = 8, db: Session = Depends(get_
             outstanding.append({"job_id": job.id, "job": job.name, "rep": rep, "balance_due": str(balance),
                                 "last_payment": last_paid,
                                 "days_since_payment": (date.today() - last_paid).days if last_paid else None})
-        if (job.status == "Closed" and not job.frozen and not job.commission_paid_at and balance <= 0
-                and not w["costs_waiting"] and Decimal(w["commission"]) > 0):
+        if commission_is_due(job, w):
             commission_due.append({"job_id": job.id, "job": job.name, "rep": rep, "commission": w["commission"],
                                    "closed_at": job.closed_at})
 
@@ -1263,6 +1268,36 @@ def reimbursement_status(rid: int, body: StatusIn, db: Session = Depends(get_db)
     set_status(r, body)
     db.commit()
     return reimbursement_out(r)
+
+
+# ---------- my sales (reps see their own jobs, money in and commission; never job costs) ----------
+
+@app.get("/api/sales/mine")
+def my_sales(db: Session = Depends(get_db), user: User = Depends(require("rep"))):
+    jobs = db.scalars(select(Job).where(Job.rep_id == user.id).order_by(Job.created_at.desc()).options(
+        selectinload(Job.ledger), selectinload(Job.labor), selectinload(Job.rep), selectinload(Job.assembly),
+        selectinload(Job.reimbursements), selectinload(Job.designs), selectinload(Job.payments)))
+    out, totals = [], {"sold": Decimal(0), "collected": Decimal(0), "balance": Decimal(0),
+                       "commission_due": Decimal(0), "commission_paid": Decimal(0), "commission_pending": Decimal(0)}
+    for job in jobs:
+        w = compute(job)
+        if job.commission_paid_at:
+            state = "paid"
+        elif commission_is_due(job, w):
+            state = "due"
+        else:
+            state = "pending"  # not closed and paid in full yet, so the number can still change
+        sold, collected, balance = Decimal(w["lines"][2]["amount"]), Decimal(w["collected"]), Decimal(w["balance_due"])
+        totals["sold"] += sold
+        totals["collected"] += collected
+        totals["balance"] += max(balance, Decimal(0))
+        if not w["material_pending"]:  # without material cost the profit, and so the commission, is overstated
+            totals[f"commission_{state}"] += Decimal(w["commission"])
+        out.append({"id": job.id, "name": job.name, "status": job.status, "created_at": job.created_at,
+                    "sold": str(money(sold)), "collected": str(money(collected)), "balance_due": str(money(balance)),
+                    "commission": None if w["material_pending"] else w["commission"], "commission_state": state})
+    return {"jobs": out, "totals": {k: str(money(v)) for k, v in totals.items()},
+            "commission_rate": str(user.commission_rate) if user.commission_rate is not None else None}
 
 
 # ---------- my pay (crew and designer see their own earnings) ----------

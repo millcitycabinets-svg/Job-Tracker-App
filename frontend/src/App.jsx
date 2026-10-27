@@ -95,12 +95,14 @@ export default function App() {
     owner: [["/", "Home"], ["/jobs", "Jobs"], ["/inbox", "Quick log"], ["/hours", "Hours"], ["/assembly", "Assembly"], ["/deliveries", "Deliveries"], ["/collections", "Collections"], ["/designs", "Designs"], ["/approvals", "Approvals"], ["/team", "Team"]],
     crew: crewNav,
     designer: [["/", "My designs"], ["/pay", "My pay"], ["/reimbursements", "Reimbursements"]],
+    rep: [["/", "My sales"]],
   }[me.role] || [];
   const crewHome = { per_box: <Assembly me={me} />, salary: <Deliveries me={me} /> }[me.pay_type] || <LogHours me={me} />;
 
   let page;
   const jobMatch = hash.match(/^\/jobs\/(\d+)$/);
   if (me.role === "designer") page = hash === "/reimbursements" ? <Reimbursements /> : hash === "/pay" ? <MyPay /> : <MyDesigns />;
+  else if (me.role === "rep") page = <MySales />;
   else if (me.role !== "owner" && me.role !== "crew") page = <p className="card">Your screens are coming soon.</p>;
   else if (hash === "/assembly" && me.pay_type !== "salary") page = <Assembly me={me} />;
   else if (hash === "/deliveries" && (owner || me.pay_type === "salary")) page = <Deliveries me={me} />;
@@ -1450,6 +1452,49 @@ function IntakeQueue() {
         ))}
       </ul>
     </section>
+  );
+}
+
+const COMMISSION_LABEL = { pending: "Not final", due: "Due", paid: "Paid" };
+
+function MySales() {
+  const [data, error] = useLoad("/sales/mine");
+  if (error) return <ErrorText error={error} />;
+  if (!data) return <p className="muted">Loading…</p>;
+  const t = data.totals;
+  return (
+    <>
+      <h1>My sales</h1>
+      <section className="card pay-totals">
+        <div><span className="muted">Sold</span><strong>{usd0(t.sold)}</strong></div>
+        <div><span className="muted">Collected</span><strong>{usd0(t.collected)}</strong></div>
+        <div><span className="muted">Still owed by customers</span><strong>{usd0(t.balance)}</strong></div>
+      </section>
+      <section className="card pay-totals">
+        <div><span className="muted">Commission due</span><strong>{usd(t.commission_due)}</strong></div>
+        <div><span className="muted">Commission paid</span><strong>{usd(t.commission_paid)}</strong></div>
+        <div><span className="muted">On open jobs (not final)</span><strong>{usd(t.commission_pending)}</strong></div>
+      </section>
+      <p className="muted">
+        Commission{data.commission_rate ? ` (${Number(data.commission_rate) * 100}% of job profit)` : ""} is final once a job is
+        closed, paid in full and every cost is approved.
+      </p>
+      <section className="card">
+        <h2>My jobs</h2>
+        {data.jobs.length === 0 && <p className="muted">No jobs yet.</p>}
+        <ul className="list">
+          {data.jobs.map((j) => (
+            <li key={j.id} className="entry-row">
+              <div className="row between"><strong>{j.name}</strong><span className="pill">{j.status}</span></div>
+              <div className="row between muted">
+                <span>Sold {usd0(j.sold)} · collected {usd0(j.collected)}{Number(j.balance_due) > 0 ? ` · owes ${usd0(j.balance_due)}` : ""}</span>
+                <span>{j.commission == null ? "Waiting on costs" : `${usd(j.commission)} ${COMMISSION_LABEL[j.commission_state]}`}</span>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </section>
+    </>
   );
 }
 

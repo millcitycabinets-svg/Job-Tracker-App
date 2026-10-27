@@ -242,6 +242,20 @@ def test_deliveries_from_calendar(monkeypatch):
     assert "DIRECT - Rugby Material to Karissa Abbott" in [d["job"] for d in data["deliveries"]]  # no job: show the title
 
 
+def test_rep_sees_only_own_sales():
+    owner = client("skyler@x.com", "ownerpass")
+    make_job(owner)  # Drew's
+    make_job(owner, name="Skyler's own", rep_id=ids()["Skyler"])
+    drew = client("drew@x.com", "drewpass1")
+    mine = drew.get("/api/sales/mine").json()
+    assert [j["name"] for j in mine["jobs"]] == ["Dustin Selden"]
+    job = mine["jobs"][0]
+    assert job["sold"] == "30000.00" and job["commission_state"] == "pending"
+    assert "material_total" not in job and "waterfall" not in job  # no job costs for reps
+    assert drew.get("/api/jobs").status_code == 403
+    assert client("omar@x.com", "omarpass").get("/api/sales/mine").status_code == 403
+
+
 def test_reimbursement_flow_and_privacy():
     owner = client("skyler@x.com", "ownerpass")
     jid = make_job(owner)["id"]
