@@ -1,4 +1,5 @@
 """Turn a screenshot, typed line or dictation into a draft entry using Claude.
+# Errors from Claude use 424, not 502/504: DigitalOcean's edge replaces 502/504 bodies with its own page, hiding the cause.
 
 The draft is only a suggestion: the owner confirms or edits it on screen, then it is saved through the
 normal endpoints (so every validation and the audit log still apply).
@@ -90,7 +91,7 @@ def read_rto(subject: str, body: str, pdf: bytes | None) -> dict:
             messages=[{"role": "user", "content": content}],
         )
     except anthropic.APIError as e:
-        raise HTTPException(502, f"Claude unavailable ({e.__class__.__name__})")
+        raise HTTPException(424, f"Claude unavailable ({e.__class__.__name__})")
     return next((b.input for b in msg.content if b.type == "tool_use"), {})
 
 
@@ -120,12 +121,12 @@ def parse(text: str, image: bytes | None, image_type: str | None, job_names: lis
             messages=[{"role": "user", "content": content}],
         )
     except anthropic.APIError as e:
-        raise HTTPException(502, f"Couldn't read that right now ({e.__class__.__name__}: {str(e)[:200]}). Try again.")
+        raise HTTPException(424, f"Couldn't read that right now ({e.__class__.__name__}: {str(e)[:200]}). Try again.")
     except Exception as e:  # surface anything else instead of a blank 500
-        raise HTTPException(502, f"Quick log failed ({e.__class__.__name__}: {str(e)[:200]})")
+        raise HTTPException(424, f"Quick log failed ({e.__class__.__name__}: {str(e)[:200]})")
     entry = next((b.input for b in msg.content if b.type == "tool_use"), None)
     if not entry:
-        raise HTTPException(502, "Couldn't read that. Try rewording it.")
+        raise HTTPException(424, "Couldn't read that. Try rewording it.")
 
     # Never trust a name the model made up: keep only exact matches from our lists.
     if entry.get("job") not in job_names:
