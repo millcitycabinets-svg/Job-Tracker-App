@@ -81,7 +81,7 @@ def test_unexpected_needs_reason_and_line_is_valid():
     assert owner.post(f"/api/jobs/{jid}/ledger", json={"line": 13, "amount": "100"}).status_code == 422
 
 
-def test_crew_logs_own_hours_without_seeing_dollars():
+def test_crew_logs_own_hours_and_sees_only_own_pay():
     owner = client("skyler@x.com", "ownerpass")
     jid = make_job(owner)["id"]
     omar = client("omar@x.com", "omarpass")
@@ -89,8 +89,12 @@ def test_crew_logs_own_hours_without_seeing_dollars():
     assert r.status_code == 200
     mine = omar.get("/api/labor/mine").json()
     assert len(mine) == 1 and mine[0]["hours"] == "13.00" and mine[0]["job"] == "Dustin Selden"
-    assert not any(k in mine[0] for k in ("rate", "total"))
-    # worker_id from crew is ignored: the entry is Omar's, at Omar's rate
+    assert mine[0]["total"] == "520.00" and mine[0]["status"] == "submitted"  # his own pay, nothing about the job
+    # Hours count on the job only after the owner approves them.
+    assert line(owner.get(f"/api/jobs/{jid}").json(), 6) == "0.00"
+    week = owner.get("/api/approvals").json()["hours"]
+    assert [(h["worker"], h["hours"]) for h in week] == [("Omar", "13.00")]  # crew's worker_id was ignored
+    owner.post(f"/api/labor/{week[0]['id']}/status", json={"status": "approved"})
     assert line(owner.get(f"/api/jobs/{jid}").json(), 6) == "520.00"
     assert omar.get("/api/job-names").json() == [{"id": jid, "name": "Dustin Selden", "boxes": 30, "modifications": 2}]
 
@@ -109,16 +113,15 @@ def test_crew_privacy():
     assert TestClient(app).get("/api/job-names").status_code == 401
 
 
-def test_crew_entries_lock_after_three_days():
+def test_crew_entries_lock_once_approved():
     owner = client("skyler@x.com", "ownerpass")
     jid = make_job(owner)["id"]
     omar = client("omar@x.com", "omarpass")
     entry = omar.post("/api/labor", json={"job_id": jid, "hours": "8"}).json()
     assert omar.patch(f"/api/labor/{entry['id']}", json={"hours": "9"}).status_code == 200
-    with SessionLocal() as db:
-        db.get(LaborEntry, entry["id"]).created_at = datetime.now(timezone.utc) - timedelta(days=4)
-        db.commit()
+    owner.post(f"/api/labor/{entry['id']}/status", json={"status": "approved"})
     assert omar.patch(f"/api/labor/{entry['id']}", json={"hours": "10"}).status_code == 403
+    assert omar.delete(f"/api/labor/{entry['id']}").status_code == 403
     assert omar.get("/api/labor/mine").json()[0]["editable"] is False
     assert owner.patch(f"/api/labor/{entry['id']}", json={"hours": "10"}).status_code == 200
 
@@ -237,10 +240,13 @@ def test_design_matching_puts_charge_on_line_8():
     suggestions = owner.get(f"/api/jobs/{jid}/design-suggestions").json()
     assert [s["design_name"] for s in suggestions] == ["Selden kitchen"]
     owner.post(f"/api/designs/{selden['id']}/match", json={"job_id": jid})
+    assert line(owner.get(f"/api/jobs/{jid}").json(), 8) == "0.00"  # not approved yet
+    assert {d["design_name"] for d in owner.get("/api/approvals").json()["designs"]} == {"Selden kitchen", "Garcia bath"}
+    owner.post(f"/api/designs/{selden['id']}/status", json={"status": "approved"})
     job = owner.get(f"/api/jobs/{jid}").json()
     assert line(job, 8) == "80.00" and job["designs"][0]["design_name"] == "Selden kitchen"
     assert owner.get(f"/api/jobs/{jid}/design-suggestions").json() == []
-    assert jen.patch(f"/api/designs/{selden['id']}", json={"charge": "200"}).status_code == 403  # matched = locked
+    assert jen.patch(f"/api/designs/{selden['id']}", json={"charge": "200"}).status_code == 403  # approved = locked
     assert [d["design_name"] for d in owner.get("/api/designs?unmatched=true").json()] == ["Garcia bath"]
     owner.post(f"/api/designs/{selden['id']}/match", json={"job_id": None})
     assert line(owner.get(f"/api/jobs/{jid}").json(), 8) == "0.00"
@@ -327,6 +333,8 @@ def test_migrations_match_models_and_adopt_old_databases():
     Base.metadata.create_all(engine)
     with engine.begin() as conn:
         conn.execute(text("DROP TABLE intake_emails"))  # added after migrations existed
+        for table in ("labor", "designs"):  # approval columns also came later
+            conn.execute(text(f"ALTER TABLE {table} DROP COLUMN status, DROP COLUMN status_note, DROP COLUMN paid_at"))
         conn.execute(text("DROP TABLE payments"))
         conn.execute(text("ALTER TABLE jobs DROP COLUMN commission_paid_at"))
     upgrade()
@@ -420,3 +428,45 @@ def test_ready_to_order_intake(monkeypatch):
     assert owner.post(f"/api/intake/{near['id']}/resolve", json={}).json()["outcome"] == "resolved"
     assert owner.post(f"/api/intake/{near['id']}/resolve", json={}).status_code == 422
     assert client("omar@x.com", "omarpass").get("/api/intake").status_code == 403
+
+
+def test_my_pay_by_week():
+    owner = client("skyler@x.com", "ownerpass")
+    jid = make_job(owner)["id"]
+    omar = client("omar@x.com", "omarpass")
+    a = omar.post("/api/labor", json={"job_id": jid, "hours": "10", "work_date": "2026-10-20"}).json()  # Tue
+    b = omar.post("/api/labor", json={"job_id": jid, "hours": "5", "work_date": "2026-10-13"}).json()  # prior week
+    omar.post("/api/assembly", json={"job_id": jid, "boxes": 10, "work_date": "2026-10-21"})
+    owner.post(f"/api/labor/{b['id']}/status", json={"status": "approved"})
+    owner.post(f"/api/labor/{b['id']}/status", json={"status": "paid"})
+    owner.post(f"/api/labor/{a['id']}/status", json={"status": "approved"})
+    pay = omar.get("/api/pay/mine").json()
+    assert [(w["week"], w["waiting"], w["owed"], w["paid"]) for w in pay["weeks"]] == [
+        ("2026-10-18", "200.00", "400.00", "0.00"), ("2026-10-11", "0.00", "0.00", "200.00")]
+    assert (pay["waiting"], pay["owed"], pay["paid"]) == ("200.00", "400.00", "200.00")
+
+    jen = client("jen@x.com", "jenpass1")
+    jen.post("/api/designs", json={"design_name": "Selden kitchen", "charge": "80", "design_date": "2026-10-20"})
+    assert jen.get("/api/pay/mine").json()["waiting"] == "80.00"
+    assert client("jorge@x.com", "jorgepass").get("/api/pay/mine").json()["weeks"] == []
+    assert client("drew@x.com", "drewpass1").get("/api/pay/mine").status_code == 403
+    assert omar.post(f"/api/labor/{a['id']}/status", json={"status": "paid"}).status_code == 403
+
+
+def test_rep_comes_from_email_recipients(monkeypatch):
+    from app import inbox
+
+    monkeypatch.setattr(inbox, "read_rto", lambda subject, body, pdf: {
+        "is_vendor_reply": False, "is_change_order": False, "job_name": subject.split(": ")[1], "rep_name": "Drew"})
+    monkeypatch.setenv("INTAKE_TOKEN", "secret")
+    bot = TestClient(app, headers={"x-intake-token": "secret"})
+    owner = client("skyler@x.com", "ownerpass")
+
+    def job_rep(mid, subject, recipients, sender="Delani Smith <delani@x.com>"):
+        r = bot.post("/api/intake/email", data={"message_id": mid, "subject": subject, "body": "b",
+                                                "recipients": recipients, "sender": sender}).json()
+        return owner.get(f"/api/jobs/{r['job_id']}").json()["rep_name"]
+
+    # Claude's guess is ignored when we know who was copied.
+    assert job_rep("1", "READY TO ORDER: Alpha", "skyler@x.com, m.j@highland.com") is None
+    assert job_rep("2", "READY TO ORDER: Bravo", "skyler@x.com, Drew <DREW@x.com>") == "Drew"

@@ -38,7 +38,8 @@ def compute(job) -> dict:
     for e in job.ledger:
         by_line[e.line] += e.amount
     for e in job.labor:
-        by_line[6] += labor_total(e)
+        if e.status in COUNTED:
+            by_line[6] += labor_total(e)
     for e in job.assembly:
         if e.status in COUNTED:
             by_line[5] += e.total
@@ -48,7 +49,8 @@ def compute(job) -> dict:
             received += p.amount
             by_line[10] += p.processing_fee or 0
     for d in job.designs:
-        by_line[8] += d.charge
+        if d.status in COUNTED:
+            by_line[8] += d.charge
     for r in job.reimbursements:
         if r.status in COUNTED:
             # shortcut: job reimbursements always land on materials; add a line picker if other kinds show up

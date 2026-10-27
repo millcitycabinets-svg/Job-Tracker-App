@@ -23,7 +23,6 @@ from .models import (BOX_RATE, JOB_STATUSES, LEDGER_LINES, MOD_RATE, ROLES, TRAN
                      PAYMENT_METHODS, PAYMENT_TYPES, DesignEntry, IntakeEmail, LaborEntry, LedgerEntry, Payment, Reimbursement, User)
 from .waterfall import compute, labor_total, money
 
-CREW_EDIT_WINDOW = timedelta(days=3)
 
 @asynccontextmanager
 async def lifespan(_app):
@@ -379,9 +378,10 @@ class LaborPatch(BaseModel):
 
 
 def crew_view(e: LaborEntry, user: User):
-    editable = user.role == "owner" or datetime.now(timezone.utc) - e.created_at < CREW_EDIT_WINDOW
-    return {"id": e.id, "job_id": e.job_id, "job": e.job.name, "work_date": e.work_date, "hours": str(e.hours),
-            "editable": editable}
+    """A worker sees their own pay on their own hours; nothing about the job's money."""
+    return {"id": e.id, "job_id": e.job_id, "job": e.job.name, "worker": e.worker.name, "work_date": e.work_date,
+            "hours": str(e.hours), "total": str(labor_total(e)), "status": e.status, "status_note": e.status_note,
+            "editable": user.role == "owner" or e.status == "submitted"}
 
 
 def labor_for_edit(db: Session, entry_id: int, user: User) -> LaborEntry:
@@ -389,8 +389,8 @@ def labor_for_edit(db: Session, entry_id: int, user: User) -> LaborEntry:
     if user.role != "owner":
         if e.worker_id != user.id:
             raise HTTPException(404, "LaborEntry not found")
-        if datetime.now(timezone.utc) - e.created_at >= CREW_EDIT_WINDOW:
-            raise HTTPException(403, "This entry is locked. Ask Skyler to change it.")
+        if e.status != "submitted":
+            raise HTTPException(403, "This entry is already approved. Ask Skyler to change it.")
     return e
 
 
@@ -413,7 +413,8 @@ def add_labor(body: LaborIn, db: Session = Depends(get_db), user: User = Depends
     if worker.hourly_rate is None:
         raise HTTPException(422, f"{worker.name} has no hourly rate set")
     e = LaborEntry(job_id=body.job_id, worker_id=worker.id, work_date=body.work_date or date.today(),
-                   hours=body.hours, rate=worker.hourly_rate, created_by=user.id)
+                   hours=body.hours, rate=worker.hourly_rate, created_by=user.id,
+                   status="approved" if user.role == "owner" else "submitted")
     db.add(e)
     db.commit()
     return crew_view(e, user)
@@ -591,7 +592,8 @@ class MatchIn(BaseModel):
 def design_out(d: DesignEntry):
     return {"id": d.id, "designer": d.designer.name, "design_name": d.design_name, "design_date": d.design_date,
             "revisions": d.revisions, "charge": str(d.charge), "note": d.note, "job_id": d.job_id,
-            "job": d.job.name if d.job else None}
+            "job": d.job.name if d.job else None, "status": d.status, "status_note": d.status_note,
+            "paid_at": d.paid_at}
 
 
 def _words(name: str) -> set[str]:
@@ -610,8 +612,8 @@ def editable_design(db: Session, design_id: int, user: User) -> DesignEntry:
     if user.role != "owner":
         if d.designer_id != user.id:
             raise HTTPException(404, "DesignEntry not found")
-        if d.job_id:
-            raise HTTPException(403, "This design is already matched to a job. Ask Skyler to change it.")
+        if d.status != "submitted":
+            raise HTTPException(403, "This design is already approved. Ask Skyler to change it.")
     return d
 
 
@@ -810,6 +812,19 @@ def automation_user(db: Session) -> User:
     return owner
 
 
+def rep_on_thread(db: Session, recipients: str, sender: str | None) -> str | None:
+    """The job belongs to the rep copied on the email (Drew or Garner on To/CC); nobody copied = the owner's own job.
+
+    The sender is skipped because Delani sends every ready-to-order email; the owner reassigns her own jobs by hand.
+    """
+    emails = lambda text: {a.lower() for a in re.findall(r"[\w.+-]+@[\w.-]+", text or "")}  # noqa: E731
+    addresses = emails(recipients) - emails(sender)  # "Delani Smith <delani@...>" works too
+    for rep in db.scalars(select(User).where(User.role == "rep", User.active).order_by(User.id)):
+        if rep.email.lower() in addresses:
+            return rep.name
+    return None
+
+
 def match_rep(db: Session, name: str | None) -> int | None:
     if not name:
         return None
@@ -904,6 +919,7 @@ async def intake_email(
     body: str = Form(default=""),
     thread_id: str | None = Form(default=None),
     sender: str | None = Form(default=None),
+    recipients: str = Form(default=""),  # To + CC addresses, comma separated
     pdf: UploadFile | None = File(default=None),
     db: Session = Depends(get_db),
 ):
@@ -925,6 +941,8 @@ async def intake_email(
             if len(data) > MAX_RECEIPT_BYTES:
                 data = None
         p = inbox.read_rto(subject, body, data)
+        if recipients.strip():
+            p["rep_name"] = rep_on_thread(db, recipients, sender)
         outcome, job = route_email(db, p, thread_id, subject)
     e = IntakeEmail(message_id=message_id, thread_id=thread_id, sender=sender, subject=subject[:500], parsed=p,
                     outcome=outcome, job_id=job.id if job else None)
@@ -1089,7 +1107,14 @@ def approvals(db: Session = Depends(get_db), _=Depends(owner_only)):
     open_statuses = ("submitted", "approved")
     a = db.scalars(select(AssemblyEntry).where(AssemblyEntry.status.in_(open_statuses)).order_by(AssemblyEntry.id))
     r = db.scalars(select(Reimbursement).where(Reimbursement.status.in_(open_statuses)).order_by(Reimbursement.id))
-    return {"assembly": [assembly_out(e) for e in a], "reimbursements": [reimbursement_out(x) for x in r]}
+    h = db.scalars(select(LaborEntry).where(LaborEntry.status.in_(open_statuses))
+                   .options(selectinload(LaborEntry.job), selectinload(LaborEntry.worker))
+                   .order_by(LaborEntry.work_date, LaborEntry.id))
+    d = db.scalars(select(DesignEntry).where(DesignEntry.status.in_(open_statuses)).order_by(DesignEntry.design_date))
+    owner = db.get(User, db.info["user_id"])
+    return {"assembly": [assembly_out(e) for e in a], "reimbursements": [reimbursement_out(x) for x in r],
+            "hours": [{**crew_view(e, owner), "week": bucket_start(e.work_date, "week")} for e in h],
+            "designs": [design_out(x) for x in d]}
 
 
 @app.post("/api/assembly/{entry_id}/status")
@@ -1100,12 +1125,57 @@ def assembly_status(entry_id: int, body: StatusIn, db: Session = Depends(get_db)
     return assembly_out(e)
 
 
+@app.post("/api/labor/{entry_id}/status")
+def labor_status(entry_id: int, body: StatusIn, db: Session = Depends(get_db), user: User = Depends(owner_only)):
+    e = get_or_404(db, LaborEntry, entry_id)
+    set_status(e, body)
+    db.commit()
+    return crew_view(e, user)
+
+
+@app.post("/api/designs/{design_id}/status")
+def design_status(design_id: int, body: StatusIn, db: Session = Depends(get_db), _=Depends(owner_only)):
+    d = get_or_404(db, DesignEntry, design_id)
+    set_status(d, body)
+    db.commit()
+    return design_out(d)
+
+
 @app.post("/api/reimbursements/{rid}/status")
 def reimbursement_status(rid: int, body: StatusIn, db: Session = Depends(get_db), _=Depends(owner_only)):
     r = get_or_404(db, Reimbursement, rid)
     set_status(r, body)
     db.commit()
     return reimbursement_out(r)
+
+
+# ---------- my pay (crew and designer see their own earnings) ----------
+
+@app.get("/api/pay/mine")
+def my_pay(db: Session = Depends(get_db), user: User = Depends(require("crew", "designer"))):
+    items = []  # (date, amount, status, what)
+    for e in db.scalars(select(LaborEntry).where(LaborEntry.worker_id == user.id).options(selectinload(LaborEntry.job))):
+        items.append((e.work_date, labor_total(e), e.status, f"{e.hours} h · {e.job.name}"))
+    for e in db.scalars(select(AssemblyEntry).where(AssemblyEntry.worker_id == user.id)):
+        if e.status != "rejected":
+            items.append((e.work_date, money(e.total), e.status, f"Assembly · {e.job.name}"))
+    for d in db.scalars(select(DesignEntry).where(DesignEntry.designer_id == user.id)):
+        if d.status != "rejected":
+            items.append((d.design_date, money(d.charge), d.status, f"Design · {d.design_name}"))
+
+    weeks: dict[date, dict] = {}
+    for when, amount, status, what in items:
+        w = weeks.setdefault(bucket_start(when, "week"), {"waiting": Decimal(0), "owed": Decimal(0), "paid": Decimal(0), "items": []})
+        w[{"submitted": "waiting", "approved": "owed", "paid": "paid"}[status]] += amount
+        w["items"].append({"date": when, "what": what, "amount": str(amount), "status": status})
+    out = []
+    for start in sorted(weeks, reverse=True):
+        w = weeks[start]
+        out.append({"week": start, "label": bucket_label(start, "week"), "waiting": str(money(w["waiting"])),
+                    "owed": str(money(w["owed"])), "paid": str(money(w["paid"])),
+                    "items": sorted(w["items"], key=lambda i: i["date"], reverse=True)})
+    total = lambda k: str(money(sum(Decimal(w[k]) for w in out)))  # noqa: E731
+    return {"weeks": out, "waiting": total("waiting"), "owed": total("owed"), "paid": total("paid")}
 
 
 # ---------- audit (owner) ----------

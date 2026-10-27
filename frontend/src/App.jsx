@@ -86,16 +86,17 @@ export default function App() {
   const logout = () => api("/logout", { method: "POST" }).then(() => setMe(null));
   const nav = {
     owner: [["/", "Jobs"], ["/inbox", "Quick log"], ["/hours", "Hours"], ["/assembly", "Assembly"], ["/collections", "Collections"], ["/designs", "Designs"], ["/approvals", "Approvals"], ["/team", "Team"]],
-    crew: [["/", "Hours"], ["/assembly", "Assembly"], ["/reimbursements", "Reimbursements"]],
-    designer: [["/", "My designs"], ["/reimbursements", "Reimbursements"]],
+    crew: [["/", "Hours"], ["/assembly", "Assembly"], ["/pay", "My pay"], ["/reimbursements", "Reimbursements"]],
+    designer: [["/", "My designs"], ["/pay", "My pay"], ["/reimbursements", "Reimbursements"]],
   }[me.role] || [];
 
   let page;
   const jobMatch = hash.match(/^\/jobs\/(\d+)$/);
-  if (me.role === "designer") page = hash === "/reimbursements" ? <Reimbursements /> : <MyDesigns />;
+  if (me.role === "designer") page = hash === "/reimbursements" ? <Reimbursements /> : hash === "/pay" ? <MyPay /> : <MyDesigns />;
   else if (me.role !== "owner" && me.role !== "crew") page = <p className="card">Your screens are coming soon.</p>;
   else if (hash === "/assembly") page = <Assembly me={me} />;
   else if (hash === "/reimbursements" && !owner) page = <Reimbursements />;
+  else if (hash === "/pay" && !owner) page = <MyPay />;
   else if (!owner) page = <LogHours me={me} />;
   else if (jobMatch) page = <JobDetail id={jobMatch[1]} />;
   else if (hash === "/new") page = <NewJob />;
@@ -456,13 +457,14 @@ function MyHours({ entries, jobs, reload }) {
               <>
                 <span>{e.work_date} · {e.job}</span>
                 <span>
-                  {e.hours} h{" "}
-                  {e.editable ? (
+                  {e.hours} h · {usd(e.total)}{" "}
+                  <StatusPill entry={e} />
+                  {e.editable && (
                     <>
                       <button className="link" onClick={() => setEditing({ ...e })}>Edit</button>
                       <button className="link" onClick={() => remove(e.id)}>Delete</button>
                     </>
-                  ) : <span className="muted">Locked</span>}
+                  )}
                 </span>
               </>
             )}
@@ -729,7 +731,7 @@ function Approvals() {
       note = prompt("Reason (they'll see this)");
       if (note === null) return;
     }
-    await api(`/${kind}/${item.id}/status`, { method: "POST", body: { status, note } });
+    for (const id of item.ids || [item.id]) await api(`/${kind}/${id}/status`, { method: "POST", body: { status, note } });
     reload();
   });
   if (error) return <ErrorText error={error} />;
@@ -738,7 +740,18 @@ function Approvals() {
   const items = [
     ...data.assembly.map((e) => ({ ...e, kind: "assembly", who: e.worker, amount: e.total, date: e.work_date, what: `Assembly · ${e.boxes} boxes, ${e.modifications} mods${e.note ? ` · ${e.note}` : ""}` })),
     ...data.reimbursements.map((r) => ({ ...r, kind: "reimbursements", who: r.user, date: r.spent_on, what: `Reimbursement · ${r.purpose}`, job: r.job || "No job" })),
+    ...data.designs.map((d) => ({ ...d, kind: "designs", who: d.designer, amount: d.charge, date: d.design_date, what: `Design · ${d.design_name}${d.revisions ? ` · ${d.revisions} rev` : ""}`, job: d.job || "No job yet" })),
   ];
+  // A person's hours for one week approve and pay together.
+  const weeks = {};
+  for (const h of data.hours) {
+    const g = (weeks[`${h.worker}|${h.week}|${h.status}`] ||= { kind: "labor", id: `${h.worker}${h.week}${h.status}`, ids: [], who: h.worker, status: h.status, date: `Week of ${h.week}`, amount: 0, hours: 0, jobs: new Set() });
+    g.ids.push(h.id);
+    g.amount += Number(h.total);
+    g.hours += Number(h.hours);
+    g.jobs.add(h.job);
+  }
+  for (const g of Object.values(weeks)) items.push({ ...g, job: [...g.jobs].join(", "), what: `Hours · ${g.hours} h (${g.ids.length} ${g.ids.length === 1 ? "entry" : "entries"})` });
   const waiting = items.filter((i) => i.status === "submitted");
   const owedBy = {}; // not Object.groupBy: crew phones may run older Safari
   for (const i of items.filter((i) => i.status === "approved")) (owedBy[i.who] ||= []).push(i);
@@ -853,7 +866,6 @@ function MyDesigns() {
       reload();
     }
   });
-  const matched = (mine || []).filter((d) => d.job).length;
   return (
     <>
       <form className="card" onSubmit={submit}>
@@ -872,7 +884,7 @@ function MyDesigns() {
       <section className="card">
         <div className="row between">
           <h2>My designs</h2>
-          <span className="muted">{mine?.length || 0} logged · {matched} turned into jobs</span>
+          <span className="muted">{mine?.length || 0} logged</span>
         </div>
         <ErrorText error={removeError} />
         {mine?.length === 0 && <p className="muted">None yet.</p>}
@@ -884,8 +896,8 @@ function MyDesigns() {
                 <span>{usd(d.charge)}</span>
               </div>
               <div className="row between muted">
-                <span>{d.revisions ? `${d.revisions} revision${d.revisions === 1 ? "" : "s"} · ` : ""}{d.job ? `Job: ${d.job}` : "Not matched to a job yet"}</span>
-                {!d.job && <button className="link" onClick={() => remove(d.id)}>Delete</button>}
+                <span>{d.revisions ? `${d.revisions} revision${d.revisions === 1 ? "" : "s"} · ` : ""}<StatusPill entry={d} /></span>
+                {d.status === "submitted" && <button className="link" onClick={() => remove(d.id)}>Delete</button>}
               </div>
             </li>
           ))}
@@ -1307,5 +1319,52 @@ function IntakeQueue() {
         ))}
       </ul>
     </section>
+  );
+}
+
+function MyPay() {
+  const [pay, error] = useLoad("/pay/mine");
+  const [open, setOpen] = useState(null);
+  if (error) return <ErrorText error={error} />;
+  if (!pay) return <p className="muted">Loading…</p>;
+  return (
+    <>
+      <h1>My pay</h1>
+      <section className="card">
+        <div className="pay-totals">
+          <div><span className="muted">Waiting for approval</span><strong>{usd(pay.waiting)}</strong></div>
+          <div><span className="muted">Approved, not paid yet</span><strong>{usd(pay.owed)}</strong></div>
+          <div><span className="muted">Paid</span><strong>{usd(pay.paid)}</strong></div>
+        </div>
+      </section>
+      <section className="card">
+        <h2>By week</h2>
+        {pay.weeks.length === 0 && <p className="muted">Nothing logged yet.</p>}
+        <ul className="list">
+          {pay.weeks.map((w) => (
+            <li key={w.week} className="entry-row">
+              <button className="link week-row" onClick={() => setOpen(open === w.week ? null : w.week)} aria-expanded={open === w.week}>
+                <strong>{w.label}</strong>
+                <span>
+                  {Number(w.paid) > 0 && <span className="status-approved">Paid {usd(w.paid)} </span>}
+                  {Number(w.owed) > 0 && <span>Owed {usd(w.owed)} </span>}
+                  {Number(w.waiting) > 0 && <span className="status-submitted">Waiting {usd(w.waiting)}</span>}
+                </span>
+              </button>
+              {open === w.week && (
+                <ul className="list">
+                  {w.items.map((i, n) => (
+                    <li key={n} className="row between muted">
+                      <span>{i.date} · {i.what}</span>
+                      <span>{usd(i.amount)} <StatusPill entry={i} /></span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          ))}
+        </ul>
+      </section>
+    </>
   );
 }

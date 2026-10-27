@@ -86,6 +86,10 @@ class LaborEntry(Base):
     rate: Mapped[Decimal] = mapped_column(Money)  # copied at entry so rate changes never rewrite history
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    # Existing rows predate approvals and were already counted, so they start as approved.
+    status: Mapped[str] = mapped_column(String(20), default="submitted", server_default="approved")
+    status_note: Mapped[str | None] = mapped_column(Text)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     job: Mapped[Job] = relationship(back_populates="labor")
     worker: Mapped[User] = relationship(foreign_keys=[worker_id])
@@ -157,6 +161,10 @@ class DesignEntry(Base):
     note: Mapped[str | None] = mapped_column(Text)
     job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    # Existing rows predate approvals and were already counted, so they start as approved.
+    status: Mapped[str] = mapped_column(String(20), default="submitted", server_default="approved")
+    status_note: Mapped[str | None] = mapped_column(Text)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     designer: Mapped[User] = relationship()
     job: Mapped[Job | None] = relationship()

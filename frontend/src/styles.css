@@ -99,3 +99,7 @@ button.link { background: none; color: var(--accent); padding: 0.25rem; min-heig
 .segmented button { padding: 0.4rem 0.8rem; min-height: 40px; }
 textarea { font: inherit; padding: 0.6rem; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--ink); width: 100%; margin-bottom: 0.75rem; resize: vertical; }
 .draft { border: 2px solid var(--accent); }
+.pay-totals { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75rem; }
+.pay-totals div { display: flex; flex-direction: column; gap: 0.25rem; }
+.pay-totals strong { font-size: 1.3rem; }
+.week-row { width: 100%; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem; color: var(--ink); text-align: left; }
