@@ -296,6 +296,15 @@ def test_payments_balance_fees_and_collections():
     # 30000 - 12000 materials - 435 card fee = 17565 profit; 30% = 5269.50
     assert due == [{"job_id": jid, "job": "Dustin Selden", "rep": "Drew", "commission": "5269.50",
                     "closed_at": due[0]["closed_at"]}]
+    # A cost still waiting for approval holds the commission back until it's approved.
+    omar = client("omar@x.com", "omarpass")
+    owner.patch(f"/api/jobs/{jid}", json={"status": "Installed"})
+    entry = omar.post("/api/labor", json={"job_id": jid, "hours": "10"}).json()
+    owner.patch(f"/api/jobs/{jid}", json={"status": "Closed"})
+    assert owner.get("/api/collections").json()["commission_due"] == []
+    owner.post(f"/api/labor/{entry['id']}/status", json={"status": "approved"})
+    due = owner.get("/api/collections").json()["commission_due"]
+    assert due[0]["commission"] == "5149.50"  # (17565 - 400 labor) x 30%
     owner.post(f"/api/jobs/{jid}/commission-paid", json={"paid": True})
     assert owner.get("/api/collections").json()["commission_due"] == []
     omar = client("omar@x.com", "omarpass")

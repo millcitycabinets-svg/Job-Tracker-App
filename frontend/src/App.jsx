@@ -333,10 +333,15 @@ function JobDetail({ id }) {
         <p>Collected {usd(w.collected)} · <strong>Balance due {usd(w.balance_due)}</strong></p>
         {job.status === "Closed" && Number(w.commission) > 0 && (
           <p className="row between">
-            <span>{job.commission_paid_at ? `Commission paid ${job.commission_paid_at.slice(0, 10)}` : job.frozen ? "Commission frozen" : `Commission due: ${usd(w.commission)}`}</span>
-            <button className="link" onClick={() => api(`/jobs/${id}/commission-paid`, { method: "POST", body: { paid: !job.commission_paid_at } }).then(setJob)}>
-              {job.commission_paid_at ? "Undo" : "Mark commission paid"}
-            </button>
+            <span>{job.commission_paid_at ? `Commission paid ${job.commission_paid_at.slice(0, 10)}` : job.frozen ? "Commission frozen"
+              : w.costs_waiting ? `Commission on hold: ${w.costs_waiting} cost${w.costs_waiting === 1 ? "" : "s"} waiting for approval`
+              : Number(w.balance_due) > 0 ? `Commission on hold until paid in full (${usd(w.balance_due)} due)`
+              : `Commission due: ${usd(w.commission)}`}</span>
+            {(job.commission_paid_at || (!job.frozen && !w.costs_waiting && Number(w.balance_due) <= 0)) && (
+              <button className="link" onClick={() => api(`/jobs/${id}/commission-paid`, { method: "POST", body: { paid: !job.commission_paid_at } }).then(setJob)}>
+                {job.commission_paid_at ? "Undo" : "Mark commission paid"}
+              </button>
+            )}
           </p>
         )}
       </section>

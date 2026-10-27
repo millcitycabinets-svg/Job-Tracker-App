@@ -1053,7 +1053,7 @@ def collections(period: str = "week", count: int = 8, db: Session = Depends(get_
                                 "last_payment": last_paid,
                                 "days_since_payment": (date.today() - last_paid).days if last_paid else None})
         if (job.status == "Closed" and not job.frozen and not job.commission_paid_at and balance <= 0
-                and Decimal(w["commission"]) > 0):
+                and not w["costs_waiting"] and Decimal(w["commission"]) > 0):
             commission_due.append({"job_id": job.id, "job": job.name, "rep": rep, "commission": w["commission"],
                                    "closed_at": job.closed_at})
 

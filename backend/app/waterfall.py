@@ -77,6 +77,9 @@ def compute(job) -> dict:
         "net": str(money(by_line[15])),
         "margin_pct": str(margin) if margin is not None else None,
         "material_pending": job.material_total is None,
+        # Costs not yet approved don't count, so commission isn't final until this is 0.
+        "costs_waiting": sum(1 for e in [*job.labor, *job.assembly, *job.designs, *job.reimbursements]
+                             if e.status == "submitted"),
         "collected": str(money(received)),
         "balance_due": str(money(by_line[3] - received)),
     }
