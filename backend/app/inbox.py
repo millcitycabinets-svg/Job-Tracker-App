@@ -12,6 +12,12 @@ from datetime import date
 from fastapi import HTTPException
 
 MODEL = os.environ.get("INBOX_MODEL", "claude-sonnet-5-5")
+# shortcut: Sonnet 5.5 list price per token (in, out); update if INBOX_MODEL changes
+PRICE_IN, PRICE_OUT = 2 / 1_000_000, 10 / 1_000_000
+
+
+def cost(usage) -> float:
+    return round(usage.input_tokens * PRICE_IN + usage.output_tokens * PRICE_OUT, 5)
 
 TOOL = {
     "name": "file_entry",
@@ -127,6 +133,8 @@ def parse(text: str, image: bytes | None, image_type: str | None, job_names: lis
     entry = next((b.input for b in msg.content if b.type == "tool_use"), None)
     if not entry:
         raise HTTPException(424, "Couldn't read that. Try rewording it.")
+    entry["cost_usd"] = cost(msg.usage)
+    print(f"quick log: {msg.usage.input_tokens} in / {msg.usage.output_tokens} out tokens, ${entry['cost_usd']}", flush=True)
 
     # Never trust a name the model made up: keep only exact matches from our lists.
     if entry.get("job") not in job_names:

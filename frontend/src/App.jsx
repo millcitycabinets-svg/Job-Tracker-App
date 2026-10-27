@@ -1151,7 +1151,7 @@ function Inbox() {
       amount: d.amount ?? "", hours: d.hours ?? "", date: d.date || today(), method: d.method || "check",
       payment_type: d.payment_type || "progress", status: d.status || "received", processing_fee: d.processing_fee ?? "",
       line: String(d.line || 4), payee: d.payee || "", note: d.note || "",
-      confidence: d.confidence, question: d.question, unknown: d.kind === "unknown",
+      confidence: d.confidence, question: d.question, unknown: d.kind === "unknown", cost: d.cost_usd,
     });
   });
 
@@ -1200,6 +1200,7 @@ function Inbox() {
             {draft.confidence !== "high" && <span className="pill status-submitted">Double-check</span>}
           </div>
           {draft.unknown && <p className="warn">Couldn't tell what this is. Pick the type below.</p>}
+          {draft.cost != null && <p className="muted">This read cost about ${draft.cost < 0.01 ? draft.cost.toFixed(4) : draft.cost.toFixed(2)}</p>}
           {draft.question && <p className="warn">{draft.question}</p>}
           <div className="grid">
             <Field label="What is it">

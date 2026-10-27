@@ -353,7 +353,8 @@ def test_smart_input_drafts_an_entry(monkeypatch):
 
         def create(self, **kw):
             sent.update(kw)
-            return SimpleNamespace(content=[SimpleNamespace(type="tool_use", input={
+            return SimpleNamespace(usage=SimpleNamespace(input_tokens=1500, output_tokens=200),
+                                   content=[SimpleNamespace(type="tool_use", input={
                 "kind": "hours", "job": "Dustin Selden", "worker": "Omar", "hours": 13, "confidence": "high"})])
 
     monkeypatch.setattr(anthropic, "Anthropic", FakeClient)
@@ -361,12 +362,13 @@ def test_smart_input_drafts_an_entry(monkeypatch):
                    files={"image": ("s.png", PNG, "image/png")})
     assert r.status_code == 200, r.text
     assert r.json()["job_id"] == jid and r.json()["worker_id"] == ids()["Omar"]
+    assert r.json()["cost_usd"] == 0.005  # 1500 in x $2/M + 200 out x $10/M
     prompt = sent["messages"][0]["content"]
     assert prompt[0]["type"] == "image" and "Dustin Selden" in prompt[-1]["text"]
     assert sent["tool_choice"] == {"type": "auto"}  # forced tool choice is rejected by current models
 
     # A name not on our lists is dropped, never invented.
-    FakeClient.create = lambda self, **kw: SimpleNamespace(content=[SimpleNamespace(
+    FakeClient.create = lambda self, **kw: SimpleNamespace(usage=SimpleNamespace(input_tokens=1, output_tokens=1), content=[SimpleNamespace(
         type="tool_use", input={"kind": "payment", "job": "Made Up Job", "amount": 500, "confidence": "low"})])
     assert owner.post("/api/inbox/parse", data={"text": "500 from someone"}).json()["job_id"] is None
     assert owner.post("/api/inbox/parse", data={"text": ""}).status_code == 422
