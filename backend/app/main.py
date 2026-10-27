@@ -1031,6 +1031,62 @@ def intake_delivery(body: CalendarDeliveryIn, request: Request, db: Session = De
     return {"outcome": outcome, "job": job.name if job else None}
 
 
+@app.get("/api/intake/jobs")
+def intake_jobs(request: Request, db: Session = Depends(get_db)):
+    """Job list for reconciling against QuickBooks from the automation (token only, read-only)."""
+    check_intake_token(request)
+    jobs = db.scalars(select(Job).order_by(Job.id).options(
+        selectinload(Job.ledger), selectinload(Job.labor), selectinload(Job.rep), selectinload(Job.assembly),
+        selectinload(Job.reimbursements), selectinload(Job.designs), selectinload(Job.payments)))
+    out = []
+    for j in jobs:
+        w = compute(j)
+        out.append({"id": j.id, "name": j.name, "customer": j.customer, "rep": j.rep.name if j.rep else None,
+                    "status": j.status, "invoice_total": str(j.invoice_total), "adjusted": w["lines"][2]["amount"],
+                    "collected": w["collected"], "balance_due": w["balance_due"], "created_at": j.created_at})
+    return out
+
+
+class ImportedInvoice(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    customer: str | None = Field(default=None, max_length=200)
+    invoice_total: Decimal = Field(ge=0)
+    open_balance: Decimal = Field(ge=0)
+    invoice_date: date
+    qb_number: str | None = Field(default=None, max_length=40)
+
+
+@app.post("/api/intake/import-invoices")
+def import_invoices(body: list[ImportedInvoice], request: Request, db: Session = Depends(get_db)):
+    """Past QuickBooks invoices from before the ready-to-order emails, added as finished jobs.
+
+    Paid in full -> Closed. Open balance -> Installed with the unpaid part still due. No rep yet (the owner's, so no
+    commission) and commission marked handled, so assigning a rep later doesn't make old commission look due.
+    """
+    check_intake_token(request)
+    owner = automation_user(db)
+    created, skipped = [], []
+    for inv in body:
+        if db.scalar(select(Job).where(Job.name == inv.name.strip())):
+            skipped.append(inv.name)
+            continue
+        paid = inv.invoice_total - min(inv.open_balance, inv.invoice_total)
+        when = datetime.combine(inv.invoice_date, datetime.min.time(), tzinfo=timezone.utc)
+        closed = inv.open_balance == 0
+        job = Job(name=inv.name.strip(), customer=inv.customer, rep_id=owner.id, invoice_total=inv.invoice_total,
+                  status="Closed" if closed else "Installed", created_at=when,
+                  closed_at=when if closed else None, commission_paid_at=when if closed else None)
+        db.add(job)
+        db.flush()
+        if paid > 0:
+            db.add(Payment(job_id=job.id, amount=paid, method="other", payment_type="final" if closed else "progress",
+                           status="received", received_date=inv.invoice_date, created_by=owner.id,
+                           note=f"Imported from QuickBooks invoice #{inv.qb_number or '-'}"))
+        created.append(job.name)
+    db.commit()
+    return {"created": len(created), "skipped": skipped}
+
+
 @app.post("/api/intake/email")
 async def intake_email(
     request: Request,

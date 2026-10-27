@@ -258,6 +258,31 @@ def test_rep_sees_only_own_sales():
     assert client("omar@x.com", "omarpass").get("/api/sales/mine").status_code == 403
 
 
+def test_import_past_invoices(monkeypatch):
+    owner = client("skyler@x.com", "ownerpass")
+    make_job(owner)
+    monkeypatch.setenv("INTAKE_TOKEN", "secret")
+    bot = TestClient(app, headers={"x-intake-token": "secret"})
+    assert TestClient(app).get("/api/intake/jobs").status_code == 401
+    assert [j["name"] for j in bot.get("/api/intake/jobs").json()] == ["Dustin Selden"]
+
+    r = bot.post("/api/intake/import-invoices", json=[
+        {"name": "Mitch Gai - 519 N 167th Dr (#2254)", "customer": "Mitch Gai", "invoice_total": "4011.08",
+         "open_balance": "0", "invoice_date": "2026-01-05", "qb_number": "2254"},
+        {"name": "Lauren Panichelle (NJ)", "invoice_total": "43665", "open_balance": "21832.50", "invoice_date": "2026-06-03"},
+        {"name": "Dustin Selden", "invoice_total": "1", "open_balance": "0", "invoice_date": "2026-06-03"},
+    ]).json()
+    assert r == {"created": 2, "skipped": ["Dustin Selden"]}
+    jobs = {j["name"]: j for j in bot.get("/api/intake/jobs").json()}
+    paid = jobs["Mitch Gai - 519 N 167th Dr (#2254)"]
+    assert paid["status"] == "Closed" and paid["balance_due"] == "0.00" and paid["rep"] == "Skyler"
+    open_ = jobs["Lauren Panichelle (NJ)"]
+    assert open_["status"] == "Installed" and open_["balance_due"] == "21832.50"
+    due = owner.get("/api/collections?period=year").json()
+    assert due["commission_due"] == []  # old jobs never show commission as due, even after a rep is assigned
+    assert "Lauren Panichelle (NJ)" in [o["job"] for o in due["outstanding"]]
+
+
 def test_reimbursement_flow_and_privacy():
     owner = client("skyler@x.com", "ownerpass")
     jid = make_job(owner)["id"]
