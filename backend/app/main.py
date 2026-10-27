@@ -194,8 +194,8 @@ def check_job_fields(db: Session, data: dict, job_id: int | None = None):
         raise HTTPException(422, f"status must be one of {JOB_STATUSES}")
     if data.get("rep_id") is not None:
         rep = db.get(User, data["rep_id"])
-        if not rep or rep.role != "rep":
-            raise HTTPException(422, "rep_id must be a sales rep")
+        if not rep or rep.role not in ("rep", "owner"):  # the owner sells too
+            raise HTTPException(422, "rep_id must be a sales rep or the owner")
     if data.get("name"):
         clash = db.scalar(select(Job).where(Job.name == data["name"].strip()))
         if clash and clash.id != job_id:
@@ -829,7 +829,7 @@ def match_rep(db: Session, name: str | None) -> int | None:
     if not name:
         return None
     first = name.strip().lower().split()[0] if name.strip() else ""
-    for rep in db.scalars(select(User).where(User.role == "rep", User.active)):
+    for rep in db.scalars(select(User).where(User.role.in_(("rep", "owner")), User.active)):
         if rep.name.lower() == name.strip().lower() or rep.name.lower().split()[0] == first:
             return rep.id
     return None
@@ -859,17 +859,18 @@ def apply_to_job(db: Session, job: Job, p: dict, owner: User) -> str:
         job.material_total = Decimal(str(p["material_total"]))
     if not job.invoice_total and p.get("invoice_total"):
         job.invoice_total = Decimal(str(p["invoice_total"]))
-    if not job.rep_id:
-        job.rep_id = match_rep(db, p.get("rep_name"))
+    if not job.rep_id or job.rep_id == owner.id:  # a later email copying a rep beats the no-rep default
+        job.rep_id = match_rep(db, p.get("rep_name")) or job.rep_id or owner.id
     job.manufacturer = job.manufacturer or p.get("manufacturer")
     job.boxes = job.boxes or p.get("boxes") or 0
     job.modifications = job.modifications or p.get("modifications") or 0
     return "attached"
 
 
-def create_job_from(db: Session, p: dict, subject: str) -> Job:
+def create_job_from(db: Session, p: dict, subject: str, owner: User) -> Job:
     name = (p.get("job_name") or subject.split(":", 1)[-1]).strip()[:200]
-    job = Job(name=name, customer=p.get("customer"), rep_id=match_rep(db, p.get("rep_name")),
+    # No rep on the email = the owner's own sale.
+    job = Job(name=name, customer=p.get("customer"), rep_id=match_rep(db, p.get("rep_name")) or owner.id,
               manufacturer=p.get("manufacturer"), invoice_total=Decimal(str(p.get("invoice_total") or 0)),
               material_total=Decimal(str(p["material_total"])) if p.get("material_total") else None,
               boxes=p.get("boxes") or 0, modifications=p.get("modifications") or 0)
@@ -903,7 +904,7 @@ def route_email(db: Session, p: dict, thread_id: str | None, subject: str) -> tu
         return apply_to_job(db, job, p, owner), job
     if job and score >= 0.75:
         return "unmatched", None  # close to an existing job but not the same name: owner picks
-    return "created", create_job_from(db, p, subject)
+    return "created", create_job_from(db, p, subject, owner)
 
 
 def intake_out(e: IntakeEmail):
@@ -979,7 +980,7 @@ def intake_resolve(intake_id: int, body: ResolveIn, db: Session = Depends(get_db
             apply_to_job(db, job, e.parsed, user)
     else:
         check_job_fields(db, {"name": (e.parsed.get("job_name") or e.subject.split(":", 1)[-1]).strip()})
-        job = create_job_from(db, e.parsed, e.subject)
+        job = create_job_from(db, e.parsed, e.subject, user)
     e.job_id, e.outcome = job.id, "resolved"
     db.commit()
     return intake_out(e)

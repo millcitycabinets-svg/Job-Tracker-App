@@ -485,6 +485,6 @@ def test_rep_comes_from_email_recipients(monkeypatch):
                                                 "recipients": recipients, "sender": sender}).json()
         return owner.get(f"/api/jobs/{r['job_id']}").json()["rep_name"]
 
-    # Claude's guess is ignored when we know who was copied.
-    assert job_rep("1", "READY TO ORDER: Alpha", "skyler@x.com, m.j@highland.com") is None
+    # Claude's guess is ignored when we know who was copied; no rep copied = the owner's own sale.
+    assert job_rep("1", "READY TO ORDER: Alpha", "skyler@x.com, m.j@highland.com") == "Skyler"
     assert job_rep("2", "READY TO ORDER: Bravo", "skyler@x.com, Drew <DREW@x.com>") == "Drew"

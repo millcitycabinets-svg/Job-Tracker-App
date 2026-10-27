@@ -230,7 +230,7 @@ function jobBody(job) {
 
 function useReps() {
   const [users] = useLoad("/users");
-  return (users || []).filter((u) => u.role === "rep" && u.active);
+  return (users || []).filter((u) => (u.role === "rep" || u.role === "owner") && u.active); // owner sells too
 }
 
 function NewJob() {
