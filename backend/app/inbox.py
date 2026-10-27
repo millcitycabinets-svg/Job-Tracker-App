@@ -120,7 +120,9 @@ def parse(text: str, image: bytes | None, image_type: str | None, job_names: lis
             messages=[{"role": "user", "content": content}],
         )
     except anthropic.APIError as e:
-        raise HTTPException(502, f"Couldn't read that right now ({e.__class__.__name__}). Try again.")
+        raise HTTPException(502, f"Couldn't read that right now ({e.__class__.__name__}: {str(e)[:200]}). Try again.")
+    except Exception as e:  # surface anything else instead of a blank 500
+        raise HTTPException(502, f"Quick log failed ({e.__class__.__name__}: {str(e)[:200]})")
     entry = next((b.input for b in msg.content if b.type == "tool_use"), None)
     if not entry:
         raise HTTPException(502, "Couldn't read that. Try rewording it.")

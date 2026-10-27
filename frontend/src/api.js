@@ -8,7 +8,9 @@ export async function api(path, { method = "GET", body } = {}) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const d = data.detail;
-    throw new Error(Array.isArray(d) ? d.map((e) => `${e.loc?.at(-1)}: ${e.msg}`).join("; ") : d || res.statusText);
+    const msg = Array.isArray(d) ? d.map((e) => `${e.loc?.at(-1)}: ${e.msg}`).join("; ") : d;
+    // HTTP/2 has no status text, so a non-JSON error page would otherwise show nothing at all.
+    throw new Error(msg || `Something went wrong (error ${res.status}). Try again or tell Skyler.`);
   }
   return data;
 }
