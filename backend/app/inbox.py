@@ -70,8 +70,14 @@ RTO_TOOL = {
             "customer": {"type": "string"},
             "rep_name": {"type": "string", "description": "Sales rep / job owner if shown anywhere (email or PDF)."},
             "manufacturer": {"type": "string", "description": "Cabinet supplier, e.g. Highland, Oasis, Procraft."},
-            "invoice_total": {"type": "number", "description": "Total the CUSTOMER pays, from the Mill City estimate/invoice PDF."},
-            "material_total": {"type": "number", "description": "What Mill City pays the VENDOR (sales order total), if shown."},
+            "invoice_total": {"type": "number",
+                              "description": "Total the CUSTOMER pays, from the Mill City estimate/invoice PDF (often named "
+                                             "'Mill City Cabinetry - ... - MC-1234567'). Ignore design drawings."},
+            "material_total": {"type": "number",
+                               "description": "What Mill City pays the VENDOR: the total of the vendor's SALES ORDER(s) "
+                                              "(files like SO12345 / SOAZ12345). Add up distinct sales orders; an invoice "
+                                              "(INV...) or receipt for the same order is a copy, not extra. A quote "
+                                              "(QUO...) is not a sales order: leave this out if only a quote is attached."},
             "boxes": {"type": "integer"},
             "modifications": {"type": "integer", "description": "Number of modifications; 0 if NA or NONE."},
         },
@@ -80,15 +86,16 @@ RTO_TOOL = {
 }
 
 
-def read_rto(subject: str, body: str, pdf: bytes | None) -> dict:
+def read_rto(subject: str, body: str, pdfs: list[tuple[str, bytes]]) -> dict:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise HTTPException(503, "ANTHROPIC_API_KEY is not set on the app")
     import anthropic
 
     content: list[dict] = []
-    if pdf:
+    for name, data in pdfs:
+        content.append({"type": "text", "text": f"Attached file: {name}"})
         content.append({"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
-                                                       "data": base64.standard_b64encode(pdf).decode()}})
+                                                       "data": base64.standard_b64encode(data).decode()}})
     content.append({"type": "text", "text": f"Subject: {subject}\n\n{body[:20000]}\n\n"
                                             "Leave out any field you can't find. Never guess a dollar amount. Answer only by calling the read_ready_to_order tool."})
     try:
@@ -98,7 +105,10 @@ def read_rto(subject: str, body: str, pdf: bytes | None) -> dict:
         )
     except anthropic.APIError as e:
         raise HTTPException(424, f"Claude unavailable ({e.__class__.__name__})")
-    return next((b.input for b in msg.content if b.type == "tool_use"), {})
+    p = next((b.input for b in msg.content if b.type == "tool_use"), {})
+    p["cost_usd"] = cost(msg.usage)
+    print(f"intake read: {msg.usage.input_tokens} in / {msg.usage.output_tokens} out tokens, ${p['cost_usd']}", flush=True)
+    return p
 
 
 def parse(text: str, image: bytes | None, image_type: str | None, job_names: list[str], crew_names: list[str]) -> dict:

@@ -920,7 +920,7 @@ async def intake_email(
     thread_id: str | None = Form(default=None),
     sender: str | None = Form(default=None),
     recipients: str = Form(default=""),  # To + CC addresses, comma separated
-    pdf: UploadFile | None = File(default=None),
+    pdf: list[UploadFile] = File(default=[]),  # every PDF on the email; repeat the field for each
     db: Session = Depends(get_db),
 ):
     token = os.environ.get("INTAKE_TOKEN")
@@ -935,12 +935,14 @@ async def intake_email(
     if TEMPLATE_MARKER in body:
         p, outcome, job = {"reason": "blank template"}, "ignored", None
     else:
-        data = None
-        if pdf and pdf.filename and (pdf.content_type == "application/pdf" or pdf.filename.lower().endswith(".pdf")):
-            data = await pdf.read(MAX_RECEIPT_BYTES + 1)
-            if len(data) > MAX_RECEIPT_BYTES:
-                data = None
-        p = inbox.read_rto(subject, body, data)
+        pdfs, budget = [], MAX_RECEIPT_BYTES * 2  # stay well under Claude's request size limit
+        for f in pdf:
+            if f.filename and (f.content_type == "application/pdf" or f.filename.lower().endswith(".pdf")):
+                data = await f.read(budget + 1)
+                if len(data) <= budget:
+                    pdfs.append((f.filename, data))
+                    budget -= len(data)
+        p = inbox.read_rto(subject, body, pdfs)
         if recipients.strip():
             p["rep_name"] = rep_on_thread(db, recipients, sender)
         outcome, job = route_email(db, p, thread_id, subject)

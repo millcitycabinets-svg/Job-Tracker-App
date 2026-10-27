@@ -409,6 +409,15 @@ def test_ready_to_order_intake(monkeypatch):
 
     assert TestClient(app).post("/api/intake/email", data={"message_id": "x", "subject": "s"}).status_code == 401
 
+    seen = {}
+    monkeypatch.setattr(inbox, "read_rto", lambda subject, body, pdfs: seen.setdefault("pdfs", pdfs) and {
+        "is_vendor_reply": True, "is_change_order": False})
+    bot.post("/api/intake/email", data={"message_id": "multi", "subject": "Re: READY TO ORDER: X", "body": "b"},
+             files=[("pdf", ("SO1.pdf", b"%PDF-1", "application/pdf")), ("pdf", ("INV1.pdf", b"%PDF-2", "application/pdf")),
+                    ("pdf", ("logo.png", PNG, "image/png"))])
+    assert [n for n, _ in seen["pdfs"]] == ["SO1.pdf", "INV1.pdf"]  # every PDF reaches Claude, images don't
+    monkeypatch.setattr(inbox, "read_rto", lambda subject, body, pdf: replies[subject])
+
     r = send("m1", "READY TO ORDER: Keith Olson - Centennial Vanity", job_name="Keith Olson - Centennial Vanity",
              rep_name="Drew", invoice_total=9000, manufacturer="Highland", boxes=10, modifications=1)
     assert r["outcome"] == "created"
