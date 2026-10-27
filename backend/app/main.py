@@ -989,8 +989,10 @@ def check_intake_token(request: Request):
         raise HTTPException(401, "Bad intake token")
 
 
-DELIVERY_PREFIX = re.compile(r"^\s*(OUTBOUND|DIRECT)\b[^-–]*[-–]\s*", re.I)  # "OUTBOUND (PT 1 )- Dallin Hatch"
+# "OUTBOUND (PT 1 )- Dallin Hatch", "OUTBOUND: Kacic Closets", "Outbound brian harmon trims"
+DELIVERY_PREFIX = re.compile(r"^\s*(OUTBOUND|DIRECT)\b\s*(\([^)]*\))?\s*[-–—:]?\s*", re.I)
 PART_SUFFIX = re.compile(r"\s*\(?\s*PT\.?\s*\d+\s*\)?\s*$", re.I)  # "Jamie Reyna PT 3"
+ORDER_NO = re.compile(r"\s*#?SO(AZ)?\d+\b.*$", re.I)  # "Karissa Abbott SOAZ21704 this is 14x fridge panels"
 
 
 class CalendarDeliveryIn(BaseModel):
@@ -1005,7 +1007,7 @@ def intake_delivery(body: CalendarDeliveryIn, request: Request, db: Session = De
     check_intake_token(request)
     if not DELIVERY_PREFIX.match(body.title):
         return {"outcome": "ignored"}
-    name = PART_SUFFIX.sub("", DELIVERY_PREFIX.sub("", body.title)).strip()
+    name = ORDER_NO.sub("", PART_SUFFIX.sub("", DELIVERY_PREFIX.sub("", body.title))).strip()
     job, score = None, 0.0
     for j in db.scalars(select(Job)):
         s = 1.0 if j.name.lower() == name.lower() else name_score(name, j.name)

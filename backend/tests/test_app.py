@@ -233,12 +233,14 @@ def test_deliveries_from_calendar(monkeypatch):
     assert event("e2", "OUTBOUND (PT 2) - Dallin Hatch - Elissa", "2026-10-14")["outcome"] == "created"
     assert event("e1", "OUTBOUND (PT 1 )- Dallin Hatch - Elissa", "2026-10-12")["outcome"] == "updated"  # moved, not doubled
     assert event("e3", "DIRECT - Rugby Material to Karissa Abbott") == {"outcome": "created", "job": None}
+    assert event("e5", "OUTBOUND: Dallin Hatch - Elissa SOAZ17082 trailer needed", "2026-10-21")["job"] == "Dallin Hatch - Elissa"
+    assert event("e6", "Outbound — Dallin Hatch - Elissa", "2026-10-22")["job"] == "Dallin Hatch - Elissa"
 
     owner.post("/api/deliveries", json={"job_id": jid, "driver_id": ids()["Jorge"], "delivered_on": "2026-10-20"})
     assert event("e4", "OUTBOUND - Dallin Hatch - Elissa PT 3", "2026-10-20")["outcome"] == "linked"  # logged by hand too
 
     data = owner.get("/api/deliveries").json()
-    assert {c["driver"]: c["total"] for c in data["counts"]} == {"Delivery team": 3, "Jorge": 1}
+    assert {c["driver"]: c["total"] for c in data["counts"]} == {"Delivery team": 5, "Jorge": 1}
     assert "DIRECT - Rugby Material to Karissa Abbott" in [d["job"] for d in data["deliveries"]]  # no job: show the title
 
 
