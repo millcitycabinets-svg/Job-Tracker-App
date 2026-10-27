@@ -34,4 +34,6 @@ export async function shrinkPhoto(file) {
 
 const fmt = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
 export const usd = (v) => (v == null ? "—" : fmt.format(Number(v)));
+const whole = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+export const usd0 = (v) => (v == null ? "—" : whole.format(Number(v)));
 export const today = () => new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD in local time

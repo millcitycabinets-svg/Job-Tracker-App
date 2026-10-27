@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, shrinkPhoto, today, usd } from "./api.js";
+import { api, shrinkPhoto, today, usd, usd0 } from "./api.js";
+import logo from "./logo.png";
 
 const STATUSES = ["Ordered", "Assembled", "Delivered", "Installed", "Punch", "Closed"];
 const ENTRY_LINES = {
@@ -85,7 +86,7 @@ export default function App() {
   const owner = me.role === "owner";
   const logout = () => api("/logout", { method: "POST" }).then(() => setMe(null));
   const nav = {
-    owner: [["/", "Jobs"], ["/inbox", "Quick log"], ["/hours", "Hours"], ["/assembly", "Assembly"], ["/collections", "Collections"], ["/designs", "Designs"], ["/approvals", "Approvals"], ["/team", "Team"]],
+    owner: [["/", "Home"], ["/jobs", "Jobs"], ["/inbox", "Quick log"], ["/hours", "Hours"], ["/assembly", "Assembly"], ["/collections", "Collections"], ["/designs", "Designs"], ["/approvals", "Approvals"], ["/team", "Team"]],
     crew: [["/", "Hours"], ["/assembly", "Assembly"], ["/pay", "My pay"], ["/reimbursements", "Reimbursements"]],
     designer: [["/", "My designs"], ["/pay", "My pay"], ["/reimbursements", "Reimbursements"]],
   }[me.role] || [];
@@ -106,12 +107,13 @@ export default function App() {
   else if (hash === "/collections") page = <Collections />;
   else if (hash === "/inbox") page = <Inbox />;
   else if (hash === "/team") page = <Team />;
-  else page = <JobsList />;
+  else if (hash === "/jobs") page = <JobsList />;
+  else page = <Home me={me} />;
 
   return (
     <div className="app">
       <header className="top">
-        <strong>Mill City Jobs</strong>
+        <a href="#/" className="brand"><img src={logo} alt="" />Mill City Jobs</a>
         <nav>
           {nav.map(([to, label]) => (
             <a key={to} href={`#${to}`} className={hash === to ? "active" : ""}>{label}</a>
@@ -120,6 +122,11 @@ export default function App() {
         <button className="link" onClick={logout}>Log out</button>
       </header>
       <main>{page}</main>
+      {owner && hash !== "/inbox" && (
+        <a href="#/inbox" className="fab" aria-label="Quick log">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+        </a>
+      )}
     </div>
   );
 }
@@ -130,7 +137,8 @@ function Login({ onLogin }) {
   const [submit, busy, error] = useSubmit(async () => onLogin(await api("/login", { method: "POST", body: { email, password } })));
   return (
     <form className="card login" onSubmit={submit}>
-      <h1>Mill City Jobs</h1>
+      <img src={logo} alt="Mill City Cabinetry" style={{ width: 120, alignSelf: "center" }} />
+      <h1 style={{ textAlign: "center" }}>Mill City Jobs</h1>
       <Field label="Email"><input type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required /></Field>
       <Field label="Password"><input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required /></Field>
       <ErrorText error={error} />
@@ -273,7 +281,7 @@ function JobDetail({ id }) {
 
   return (
     <>
-      <a href="#/" className="back">← Jobs</a>
+      <a href="#/jobs" className="back">← Jobs</a>
       <div className="row between">
         <h1>{job.name}</h1>
         <span className="pill">{job.status}{job.frozen ? " · Frozen" : ""}</span>
@@ -1365,6 +1373,143 @@ function MyPay() {
           ))}
         </ul>
       </section>
+    </>
+  );
+}
+
+const WIDGETS = {
+  collected: "Collected this week",
+  pending: "Pending payments",
+  approvals: "Approvals",
+  jobs: "Jobs in progress",
+  commission: "Commission due",
+  margin: "Net margin this month",
+};
+const WIDGET_KEY = "home-widgets-v1";
+
+function loadWidgets() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(WIDGET_KEY));
+    if (Array.isArray(saved)) return saved.filter((w) => WIDGETS[w.id]).concat(
+      Object.keys(WIDGETS).filter((id) => !saved.some((w) => w.id === id)).map((id) => ({ id, on: true })));
+  } catch { /* storage blocked: use defaults */ }
+  return Object.keys(WIDGETS).map((id) => ({ id, on: true }));
+}
+
+function Home({ me }) {
+  const dayOfWeek = new Date().getDay(); // weeks run Sunday to Saturday
+  const [money, moneyError] = useLoad(`/collections?period=day&count=${dayOfWeek + 1}`);
+  const [appr] = useLoad("/approvals");
+  const [jobs] = useLoad("/jobs");
+  const [layout, setLayout] = useState(loadWidgets);
+  const [editing, setEditing] = useState(false);
+  const save = (next) => {
+    setLayout(next);
+    try { localStorage.setItem(WIDGET_KEY, JSON.stringify(next)); } catch { /* per-device only */ }
+  };
+  const move = (i, d) => {
+    const next = [...layout];
+    [next[i], next[i + d]] = [next[i + d], next[i]];
+    save(next);
+  };
+
+  const totals = (money?.collected_total || []).map(Number);
+  const week = totals.reduce((s, v) => s + v, 0);
+  const max = Math.max(1, ...totals);
+  const days = ["S", "M", "T", "W", "T", "F", "S"].map((d, i) => ({ d, v: totals[i] ?? null, today: i === dayOfWeek }));
+  const pending = (money?.pending || []).reduce((s, p) => s + Number(p.amount), 0);
+  const waiting = appr ? [...appr.hours.filter((h) => h.status === "submitted").map((h) => `${h.worker}|${h.week}`)].filter((v, i, a) => a.indexOf(v) === i).length
+    + [appr.assembly, appr.reimbursements, appr.designs].flat().filter((x) => x.status === "submitted").length : null;
+  const open = (jobs || []).filter((j) => j.status !== "Closed");
+  const commission = (money?.commission_due || []).reduce((s, c) => s + Number(c.commission), 0);
+  const monthStart = new Date(); monthStart.setDate(1); monthStart.setHours(0, 0, 0, 0);
+  const closed = (jobs || []).filter((j) => j.status === "Closed" && j.closed_at && new Date(j.closed_at) >= monthStart);
+  const revenue = closed.reduce((s, j) => s + Number(j.adjusted_revenue), 0);
+  const margin = revenue ? (closed.reduce((s, j) => s + Number(j.net), 0) / revenue) * 100 : null;
+  const hour = new Date().getHours();
+  const greet = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+
+  const render = {
+    collected: (
+      <a href="#/collections" className="widget wide" key="collected">
+        <div className="row between"><span className="label">Collected this week</span>{totals.length > 0 && <span className="sub accent">+{usd0(totals.at(-1))} today</span>}</div>
+        <span className="big">{money ? usd0(week) : "—"}</span>
+        <div className="bars" aria-hidden="true">
+          {days.map((b, i) => (
+            <div key={i}><i className={b.today ? "today" : ""} style={{ height: b.v == null ? 4 : Math.max(4, Math.round((b.v / max) * 40)) }} /><span>{b.d}</span></div>
+          ))}
+        </div>
+      </a>
+    ),
+    pending: (
+      <a href="#/collections" className="widget" key="pending">
+        <span className="label">Pending</span>
+        <span className="mid">{money ? usd0(pending) : "—"}</span>
+        <span className="sub">{money ? `${money.pending.length} on the way` : ""}</span>
+      </a>
+    ),
+    approvals: (
+      <a href="#/approvals" className="widget" key="approvals">
+        <span className="label">Approvals</span>
+        <span className="mid">{waiting == null ? "—" : `${waiting} waiting`}</span>
+        <span className="sub accent">Review →</span>
+      </a>
+    ),
+    jobs: (
+      <section className="widget wide home-jobs" key="jobs">
+        <div className="row between"><span className="label">Jobs in progress</span><a href="#/jobs" className="sub">{open.length} open</a></div>
+        {open.length === 0 && <span className="sub">No open jobs yet.</span>}
+        {open.slice(0, 3).map((j) => (
+          <a key={j.id} href={`#/jobs/${j.id}`}>
+            <div><span>{j.name}</span><span className="sub">{[j.rep_name || "Your job", Number(j.balance_due) > 0 && `${usd0(j.balance_due)} due`].filter(Boolean).join(" · ")}</span></div>
+            <span className="pill status-approved">{j.status}</span>
+          </a>
+        ))}
+      </section>
+    ),
+    commission: (
+      <a href="#/collections" className="widget" key="commission">
+        <span className="label">Commission due</span>
+        <span className="mid">{money ? usd0(commission) : "—"}</span>
+        <span className="sub">{money ? `${money.commission_due.length} closed ${money.commission_due.length === 1 ? "job" : "jobs"}` : ""}</span>
+      </a>
+    ),
+    margin: (
+      <section className="widget" key="margin">
+        <span className="label">Net margin, {monthStart.toLocaleString("en-US", { month: "short" })}</span>
+        <span className="mid">{margin == null ? "—" : `${margin.toFixed(1)}%`}</span>
+        <span className="sub">{closed.length} closed {closed.length === 1 ? "job" : "jobs"}</span>
+      </section>
+    ),
+  };
+
+  return (
+    <>
+      <div className="home-head">
+        <div>
+          <span className="sub muted">{new Date().toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}</span>
+          <span className="greet">{greet}, {me.name.split(" ")[0]}</span>
+        </div>
+        <button type="button" className="secondary" onClick={() => setEditing(!editing)}>{editing ? "Done" : "Edit"}</button>
+      </div>
+      <ErrorText error={moneyError} />
+      {editing && (
+        <section className="card">
+          <h2>Home widgets</h2>
+          <p className="sub muted">Show, hide and reorder. Saved on this device.</p>
+          <ul className="list edit-list">
+            {layout.map((w, i) => (
+              <li key={w.id}>
+                <label className="check"><input type="checkbox" checked={w.on} onChange={() => save(layout.map((x) => x.id === w.id ? { ...x, on: !x.on } : x))} /> {WIDGETS[w.id]}</label>
+                <span />
+                <button type="button" className="link" disabled={i === 0} onClick={() => move(i, -1)} aria-label={`Move ${WIDGETS[w.id]} up`}>↑</button>
+                <button type="button" className="link" disabled={i === layout.length - 1} onClick={() => move(i, 1)} aria-label={`Move ${WIDGETS[w.id]} down`}>↓</button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      <div className="widgets">{layout.filter((w) => w.on).map((w) => render[w.id])}</div>
     </>
   );
 }

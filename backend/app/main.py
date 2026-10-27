@@ -1203,4 +1203,8 @@ if DIST.exists():
     def spa(path: str):
         if path.startswith("api/"):
             raise HTTPException(404)
+        file = (DIST / path).resolve()
+        # Top-level files from frontend/public (icons, manifest); anything else is the app.
+        if path and file.parent == DIST.resolve() and file.is_file():
+            return FileResponse(file)
         return FileResponse(DIST / "index.html")
