@@ -363,6 +363,7 @@ def test_smart_input_drafts_an_entry(monkeypatch):
     assert r.json()["job_id"] == jid and r.json()["worker_id"] == ids()["Omar"]
     prompt = sent["messages"][0]["content"]
     assert prompt[0]["type"] == "image" and "Dustin Selden" in prompt[-1]["text"]
+    assert sent["tool_choice"] == {"type": "auto"}  # forced tool choice is rejected by current models
 
     # A name not on our lists is dropped, never invented.
     FakeClient.create = lambda self, **kw: SimpleNamespace(content=[SimpleNamespace(

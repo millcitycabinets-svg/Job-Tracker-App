@@ -84,10 +84,10 @@ def read_rto(subject: str, body: str, pdf: bytes | None) -> dict:
         content.append({"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
                                                        "data": base64.standard_b64encode(pdf).decode()}})
     content.append({"type": "text", "text": f"Subject: {subject}\n\n{body[:20000]}\n\n"
-                                            "Leave out any field you can't find. Never guess a dollar amount."})
+                                            "Leave out any field you can't find. Never guess a dollar amount. Answer only by calling the read_ready_to_order tool."})
     try:
         msg = anthropic.Anthropic().messages.create(
-            model=MODEL, max_tokens=1024, tools=[RTO_TOOL], tool_choice={"type": "tool", "name": "read_ready_to_order"},
+            model=MODEL, max_tokens=1024, tools=[RTO_TOOL], tool_choice={"type": "auto"},
             messages=[{"role": "user", "content": content}],
         )
     except anthropic.APIError as e:
@@ -106,7 +106,7 @@ def parse(text: str, image: bytes | None, image_type: str | None, job_names: lis
         f"Crew: {', '.join(crew_names) or '(none)'}\n"
         "Match job and crew names to these lists, allowing for nicknames, first or last names only, and typos. "
         "Leave job empty rather than guessing between two jobs.\n\n"
-        f"Owner's note: {text.strip() or '(no text, see attachment)'}"
+        f"Owner's note: {text.strip() or '(no text, see attachment)'}\n\nAnswer only by calling the file_entry tool."
     )
     content: list[dict] = []
     if image:
@@ -117,7 +117,7 @@ def parse(text: str, image: bytes | None, image_type: str | None, job_names: lis
 
     try:
         msg = anthropic.Anthropic().messages.create(
-            model=MODEL, max_tokens=1024, tools=[TOOL], tool_choice={"type": "tool", "name": "file_entry"},
+            model=MODEL, max_tokens=1024, tools=[TOOL], tool_choice={"type": "auto"},
             messages=[{"role": "user", "content": content}],
         )
     except anthropic.APIError as e:
