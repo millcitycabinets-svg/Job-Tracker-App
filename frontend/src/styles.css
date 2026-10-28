@@ -127,3 +127,15 @@ input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible
   .fab { display: flex; position: fixed; right: 18px; bottom: 22px; width: 56px; height: 56px; border-radius: 18px; align-items: center; justify-content: center; background: var(--accent); color: var(--on-accent); box-shadow: 0 6px 20px rgba(0,0,0,.5); z-index: 10; }
   main { padding-bottom: 96px; }
 }
+
+/* Jobs tab: one compact line per job */
+.jsection { padding: 0.5rem 0.75rem; }
+.jsection summary { cursor: pointer; padding: 0.4rem 0; list-style-position: inside; }
+.jlist { gap: 0; }
+.jrow { display: flex; align-items: center; gap: 0.5rem; padding: 0.45rem 0; border-top: 1px solid var(--line); }
+.jrow-main { flex: 1; min-width: 0; display: flex; flex-direction: column; color: var(--ink); text-decoration: none; }
+.jrow-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+.jrow-sub { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.jrow-amt { font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.jrow-amt.warn { font-size: 13px; }
+.jrow-status { width: 96px; flex: none; min-height: 32px; padding: 0.2rem 0.3rem; font-size: 12px; }

@@ -157,9 +157,60 @@ function Login({ onLogin }) {
   );
 }
 
+const IN_PRODUCTION = new Set(["Ordered", "Assembled", "Delivered"]);
+const owes = (j) => Number(j.balance_due) > 0.005;
+
+function JobRow({ job, onStatus }) {
+  return (
+    <li className="jrow">
+      <a href={`#/jobs/${job.id}`} className="jrow-main">
+        <span className="jrow-name">{job.name}</span>
+        <span className="jrow-sub muted">{job.rep_name || "No rep"} · {new Date(job.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
+      </a>
+      {/* Jobs still being built show their total; finished ones show what's still owed. */}
+      {IN_PRODUCTION.has(job.status) || !owes(job)
+        ? <span className="jrow-amt muted">{usd0(job.adjusted_revenue)}</span>
+        : <span className="jrow-amt warn" title="Still owed">{usd0(job.balance_due)}</span>}
+      <select className="jrow-status" aria-label={`${job.name} status`} value={job.status}
+              onChange={(e) => onStatus(job, e.target.value)}>
+        {STATUSES.map((s) => <option key={s}>{s}</option>)}
+      </select>
+    </li>
+  );
+}
+
+function JobSection({ title, note, jobs, onStatus, open = true }) {
+  if (!jobs.length) return null;
+  return (
+    <details className="card jsection" open={open}>
+      <summary><strong>{title}</strong> <span className="muted">{jobs.length}{note ? ` · ${note}` : ""}</span></summary>
+      <ul className="list jlist">{jobs.map((j) => <JobRow key={j.id} job={j} onStatus={onStatus} />)}</ul>
+    </details>
+  );
+}
+
 function JobsList() {
-  const [status, setStatus] = useState("");
-  const [jobs, error] = useLoad(`/jobs${status ? `?status=${status}` : ""}`, [status]);
+  const [jobs, error, reload] = useLoad("/jobs");
+  const [q, setQ] = useState("");
+  const [saveStatus, , statusError] = useSubmit(async ([job, status]) => {
+    await api(`/jobs/${job.id}`, { method: "PATCH", body: { status } });
+    reload();
+  });
+  const onStatus = (job, status) => saveStatus([job, status]);
+  const all = jobs || [];
+  const term = q.trim().toLowerCase();
+  const found = term ? all.filter((j) => `${j.name} ${j.customer || ""} ${j.rep_name || ""}`.toLowerCase().includes(term)) : null;
+
+  // Newest first in production; then done-but-not-closed or still owing; then finished jobs filed by year.
+  const active = all.filter((j) => IN_PRODUCTION.has(j.status));
+  const collect = all.filter((j) => !IN_PRODUCTION.has(j.status) && (j.status !== "Closed" || owes(j)))
+    .sort((a, b) => Number(b.balance_due) - Number(a.balance_due));
+  const byYear = {};
+  for (const j of all) {
+    if (j.status === "Closed" && !owes(j)) (byYear[new Date(j.created_at).getFullYear()] ||= []).push(j);
+  }
+  const sum = (list) => usd0(list.reduce((t, j) => t + Math.max(Number(j.balance_due), 0), 0));
+
   return (
     <>
       <div className="row between">
@@ -167,33 +218,20 @@ function JobsList() {
         <a className="button" href="#/new">New job</a>
       </div>
       <IntakeQueue />
-      <select value={status} onChange={(e) => setStatus(e.target.value)} aria-label="Filter by status">
-        <option value="">All statuses</option>
-        {STATUSES.map((s) => <option key={s}>{s}</option>)}
-      </select>
-      <ErrorText error={error} />
-      {jobs?.length === 0 && <p className="muted">No jobs yet.</p>}
-      <ul className="list">
-        {jobs?.map((j) => (
-          <li key={j.id}>
-            <a className="card job" href={`#/jobs/${j.id}`}>
-              <div className="row between">
-                <strong>{j.name}</strong>
-                <span className="pill">{j.status}{j.frozen ? " · Frozen" : ""}</span>
-              </div>
-              <div className="row between muted">
-                <span>{j.rep_name || "No rep"}</span>
-                <span>{usd(j.adjusted_revenue)}</span>
-              </div>
-              <div className="row between">
-                <span>Net {usd(j.net)}{j.margin_pct != null && ` · ${j.margin_pct}%`}</span>
-                {Number(j.balance_due) > 0 && <span className="muted">Due {usd(j.balance_due)}</span>}
-                {j.material_pending && <span className="warn">Material total pending</span>}
-              </div>
-            </a>
-          </li>
-        ))}
-      </ul>
+      <input type="search" placeholder="Search every job, customer or rep" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search jobs" />
+      <ErrorText error={error || statusError} />
+      {!jobs && !error && <p className="muted">Loading…</p>}
+      {found ? (
+        found.length ? <JobSection title="Search results" jobs={found} onStatus={onStatus} /> : <p className="muted">No jobs match.</p>
+      ) : (
+        <>
+          <JobSection title="In production" note="newest first" jobs={active} onStatus={onStatus} />
+          <JobSection title="Collect & close" note={`${sum(collect)} owed`} jobs={collect} onStatus={onStatus} />
+          {Object.keys(byYear).sort((a, b) => b - a).map((y) => (
+            <JobSection key={y} title={`Finished ${y}`} note="closed and paid" jobs={byYear[y]} onStatus={onStatus} open={false} />
+          ))}
+        </>
+      )}
     </>
   );
 }
