@@ -1200,6 +1200,29 @@ def reconcile_jobs(body: list[Reconciled], request: Request, db: Session = Depen
     return out
 
 
+class RepAssignment(BaseModel):
+    job_id: int
+    rep: str
+
+
+@app.post("/api/intake/set-reps")
+def set_reps(body: list[RepAssignment], request: Request, db: Session = Depends(get_db)):
+    """Set the rep on jobs by the rep's name (from monday.com's Owner column). Unknown names are reported, not created."""
+    check_intake_token(request)
+    reps = {u.name: u for u in db.scalars(select(User).where(User.role.in_(("rep", "owner"))))}
+    out = []
+    for a in body:
+        job = get_or_404(db, Job, a.job_id)
+        if a.rep not in reps:
+            out.append({"job_id": job.id, "job": job.name, "result": f"no login named {a.rep}"})
+            continue
+        before = job.rep.name if job.rep else None
+        job.rep_id = reps[a.rep].id
+        out.append({"job_id": job.id, "job": job.name, "result": f"{before} -> {a.rep}"})
+    db.commit()
+    return out
+
+
 @app.post("/api/intake/email")
 async def intake_email(
     request: Request,

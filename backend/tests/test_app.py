@@ -659,3 +659,14 @@ def test_reconcile_with_quickbooks(monkeypatch):
     assert j["status"] == "Closed" and j["rep_name"] == "Skyler" and "email change order removed" in r[0]["changes"]
     # Paid-up but material cost unknown: commission is not due yet.
     assert owner.get("/api/collections?period=year").json()["commission_due"] == []
+
+
+def test_set_reps_by_name(monkeypatch):
+    owner = client("skyler@x.com", "ownerpass")
+    jid = make_job(owner)["id"]
+    monkeypatch.setenv("INTAKE_TOKEN", "secret")
+    bot = TestClient(app, headers={"x-intake-token": "secret"})
+    r = bot.post("/api/intake/set-reps", json=[{"job_id": jid, "rep": "Skyler"}, {"job_id": jid, "rep": "Kenneth Bodine"}])
+    assert [x["result"] for x in r.json()] == ["Drew -> Skyler", "no login named Kenneth Bodine"]
+    assert owner.get(f"/api/jobs/{jid}").json()["rep_name"] == "Skyler"
+    assert TestClient(app).post("/api/intake/set-reps", json=[]).status_code == 401
