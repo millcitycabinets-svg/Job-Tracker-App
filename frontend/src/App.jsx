@@ -92,7 +92,7 @@ export default function App() {
     salary: [["/", "Deliveries"], ["/reimbursements", "Reimbursements"]],
   }[me.pay_type] || [];
   const nav = {
-    owner: [["/", "Home"], ["/jobs", "Jobs"], ["/inbox", "Quick log"], ["/hours", "Hours"], ["/assembly", "Assembly"], ["/deliveries", "Deliveries"], ["/collections", "Collections"], ["/designs", "Designs"], ["/approvals", "Approvals"], ["/team", "Team"]],
+    owner: [["/", "Home"], ["/jobs", "Jobs"], ["/inbox", "Quick log"], ["/hours", "Hours"], ["/assembly", "Assembly"], ["/deliveries", "Deliveries"], ["/collections", "Collections"], ["/reps", "Reps"], ["/designs", "Designs"], ["/approvals", "Approvals"], ["/team", "Team"]],
     crew: crewNav,
     designer: [["/", "My designs"], ["/pay", "My pay"], ["/reimbursements", "Reimbursements"]],
     rep: [["/", "My sales"]],
@@ -115,6 +115,7 @@ export default function App() {
   else if (hash === "/approvals") page = <Approvals />;
   else if (hash === "/designs") page = <DesignPipeline />;
   else if (hash === "/collections") page = <Collections />;
+  else if (hash === "/reps") page = <RepStats />;
   else if (hash === "/inbox") page = <Inbox />;
   else if (hash === "/team") page = <Team />;
   else if (hash === "/jobs") page = <JobsList />;
@@ -1505,6 +1506,63 @@ function IntakeQueue() {
 }
 
 const COMMISSION_LABEL = { pending: "Not final", due: "Due", paid: "Paid" };
+
+
+const REP_PERIODS = { month: "This month", quarter: "This quarter", year: "This year", all: "All time" };
+const STATE_LABEL = { pending: "not final", due: "due", paid: "paid" };
+
+function RepStats() {
+  const [period, setPeriod] = useState("year");
+  const [data, error] = useLoad(`/reps/stats?period=${period}`, [period]);
+  const [open, setOpen] = useState(null);
+  return (
+    <>
+      <h1>Reps</h1>
+      <div className="row segmented">
+        {Object.entries(REP_PERIODS).map(([k, label]) => (
+          <button key={k} className={period === k ? "" : "secondary"} onClick={() => setPeriod(k)}>{label}</button>
+        ))}
+      </div>
+      <p className="muted">Deals sold {period === "all" ? "ever" : `since ${data?.since ?? "…"}`}. Profit, margin and commission only count jobs whose costs are all in.</p>
+      <ErrorText error={error} />
+      {data?.reps.length === 0 && <p className="muted">No deals in this period.</p>}
+      {data?.reps.map((r) => (
+        <section key={r.rep} className="card">
+          <div className="row between">
+            <h2 style={{ margin: 0 }}>{r.rep}</h2>
+            <span className="muted">{r.rate ? `${Number(r.rate) * 100}% commission` : "no commission"}</span>
+          </div>
+          <div className="pay-totals" style={{ marginTop: "0.75rem" }}>
+            <div><span className="muted">Deals</span><strong>{r.deal_count}</strong><span className="muted">avg {usd0(r.avg_deal)}</span></div>
+            <div><span className="muted">Sold</span><strong>{usd0(r.sold)}</strong><span className="muted">collected {usd0(r.collected)}</span></div>
+            <div><span className="muted">Job profit</span><strong>{usd0(r.profit)}</strong><span className="muted">{r.margin_pct != null ? `${r.margin_pct}% margin` : "costs not in"}</span></div>
+            <div><span className="muted">Rep earned</span><strong>{usd0(Number(r.commission_paid) + Number(r.commission_due) + Number(r.commission_pending))}</strong>
+              <span className="muted">paid {usd0(r.commission_paid)} · due {usd0(r.commission_due)}</span></div>
+            <div><span className="muted">Net to Mill City</span><strong>{usd0(r.net)}</strong><span className="muted">customers owe {usd0(r.balance)}</span></div>
+          </div>
+          {r.missing_costs > 0 && <p className="warn">{r.missing_costs} of {r.deal_count} deals don't have all costs in yet, so they're left out of profit and commission.</p>}
+          <button className="link" onClick={() => setOpen(open === r.rep ? null : r.rep)}>{open === r.rep ? "Hide deals" : `Show ${r.deal_count} deals`}</button>
+          {open === r.rep && (
+            <ul className="list jlist">
+              {r.deals.map((d) => (
+                <li key={d.id} className="jrow">
+                  <a href={`#/jobs/${d.id}`} className="jrow-main">
+                    <span className="jrow-name">{d.name}</span>
+                    <span className="jrow-sub muted">{d.sold_on} · {d.status}{Number(d.balance_due) > 0 ? ` · owes ${usd0(d.balance_due)}` : ""}</span>
+                  </a>
+                  <span className="jrow-amt" style={{ textAlign: "right" }}>
+                    {usd0(d.sold)}<br />
+                    <span className="muted">{d.commission == null ? "costs not in" : `${usd0(d.commission)} ${STATE_LABEL[d.commission_state]}`}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      ))}
+    </>
+  );
+}
 
 function MySales() {
   const [data, error] = useLoad("/sales/mine");

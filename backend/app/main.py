@@ -1224,6 +1224,52 @@ def last_buckets(today_: date, period: str, count: int) -> list[date]:
     return starts
 
 
+@app.get("/api/reps/stats")
+def rep_stats(period: str = "year", db: Session = Depends(get_db), _=Depends(owner_only)):
+    """Each rep's production (deals sold in the period) against what they earned on them."""
+    if period not in ("month", "quarter", "year", "all"):
+        raise HTTPException(422, "period must be month, quarter, year or all")
+    since = None if period == "all" else bucket_start(date.today(), period)
+    q = select(Job).options(selectinload(Job.ledger), selectinload(Job.labor), selectinload(Job.rep),
+                            selectinload(Job.assembly), selectinload(Job.reimbursements), selectinload(Job.designs),
+                            selectinload(Job.payments)).order_by(Job.created_at.desc())
+    reps: dict[str, dict] = {}
+    for job in db.scalars(q):
+        if since and job.created_at.date() < since:
+            continue
+        w = compute(job)
+        name = job.rep.name if job.rep else "No rep"
+        r = reps.setdefault(name, {"rep": name, "rate": str(job.rep.commission_rate) if job.rep and job.rep.commission_rate
+                                   is not None else None, "deals": [], **{k: Decimal(0) for k in (
+                                       "sold", "collected", "balance", "profit", "known_sold", "net", "commission_paid",
+                                       "commission_due", "commission_pending")}})
+        sold, commission = Decimal(w["lines"][2]["amount"]), Decimal(w["commission"])
+        known = not w["material_pending"] and not w["costs_waiting"]  # profit is only real once costs are in
+        state = "paid" if job.commission_paid_at else "due" if commission_is_due(job, w) else "pending"
+        r["sold"] += sold
+        r["collected"] += Decimal(w["collected"])
+        r["balance"] += max(Decimal(w["balance_due"]), Decimal(0))
+        if known:
+            r["profit"] += Decimal(w["job_profit"])
+            r["known_sold"] += sold
+            r["net"] += Decimal(w["net"])
+            r[f"commission_{state}"] += commission
+        r["deals"].append({"id": job.id, "name": job.name, "status": job.status, "sold_on": job.created_at.date(),
+                           "sold": str(money(sold)), "collected": w["collected"], "balance_due": w["balance_due"],
+                           "profit": w["job_profit"] if known else None, "margin_pct": w["margin_pct"] if known else None,
+                           "commission": w["commission"] if known else None, "commission_state": state})
+    out = []
+    for r in reps.values():
+        n, known = len(r["deals"]), r.pop("known_sold")
+        missing = sum(1 for d in r["deals"] if d["profit"] is None)
+        out.append({**{k: (str(money(v)) if isinstance(v, Decimal) else v) for k, v in r.items()},
+                    "deal_count": n, "avg_deal": str(money(r["sold"] / n)) if n else "0.00",
+                    "margin_pct": str((r["profit"] / known * 100).quantize(Decimal("0.1"))) if known else None,
+                    "missing_costs": missing})
+    out.sort(key=lambda r: -Decimal(r["sold"]))
+    return {"period": period, "since": since, "reps": out}
+
+
 def commission_is_due(job: Job, w: dict) -> bool:
     """Closed, paid in full, every cost approved, not frozen and not already paid."""
     return (job.status == "Closed" and not job.frozen and not job.commission_paid_at

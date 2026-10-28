@@ -604,3 +604,16 @@ def test_delete_job_keeps_pay_and_reimbursements(monkeypatch):
     assert owner.get(f"/api/jobs/{jid}").status_code == 404
     assert [j["name"] for j in owner.get("/api/jobs").json()] == []
     assert any(a["action"] == "delete" and a["table"] == "jobs" for a in owner.get("/api/audit").json())
+
+
+def test_rep_stats():
+    owner = client("skyler@x.com", "ownerpass")
+    jid = make_job(owner)  # Drew: 30,000 sold, 12,000 material
+    make_job(owner, name="No material yet", material_total=None, invoice_total="5000")
+    stats = owner.get("/api/reps/stats?period=all").json()
+    drew = next(r for r in stats["reps"] if r["rep"] == "Drew")
+    assert drew["deal_count"] == 2 and drew["sold"] == "35000.00" and drew["avg_deal"] == "17500.00"
+    assert drew["profit"] == "18000.00" and drew["margin_pct"] == "60.0"  # only the job with costs in
+    assert drew["commission_pending"] == "5400.00" and drew["missing_costs"] == 1
+    assert owner.get("/api/reps/stats?period=week").status_code == 422
+    assert client("drew@x.com", "drewpass1").get("/api/reps/stats").status_code == 403
