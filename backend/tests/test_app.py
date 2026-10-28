@@ -644,6 +644,13 @@ def test_reconcile_with_quickbooks(monkeypatch):
          job_name="Echo Canyon", is_change_order=True, invoice_total=567.97)
     jid = job["job_id"]
     assert owner.get(f"/api/jobs/{jid}").json()["rep_name"] == "Skyler"
+    # A rep who only replies on a thread is still a rep.
+    drew_job = send("c", "READY TO ORDER: Drew Deal", "Delani <delani@x.com>", "drew@x.com", job_name="Drew Deal")
+    send("d", "Re: READY TO ORDER: Drew Deal", "Drew <drew@x.com>", "delani@x.com", job_name="Drew Deal")
+    assert owner.get(f"/api/jobs/{drew_job['job_id']}").json()["rep_name"] == "Drew"
+    bot.post("/api/intake/reconcile", json=[{"job_id": drew_job["job_id"], "qb_total": "100", "qb_paid": "0",
+                                             "last_invoice_date": "2026-10-20"}])
+    assert owner.get(f"/api/jobs/{drew_job['job_id']}").json()["rep_name"] == "Drew"
 
     r = bot.post("/api/intake/reconcile", json=[{"job_id": jid, "qb_total": "13312.82", "qb_paid": "13312.82",
                                                  "last_invoice_date": "2026-05-11"}]).json()

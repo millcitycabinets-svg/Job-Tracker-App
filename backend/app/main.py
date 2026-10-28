@@ -905,6 +905,15 @@ def automation_user(db: Session) -> User:
     return owner
 
 
+def order_senders(db: Session) -> set[str]:
+    """Addresses that send original order emails (Delani). Reps who only reply on a thread aren't in it."""
+    out = set()
+    for sender, subject in db.execute(select(IntakeEmail.sender, IntakeEmail.subject)):
+        if not SUBJECT_PREFIX.match(subject or ""):
+            out |= {a.lower() for a in re.findall(r"[\w.+-]+@[\w.-]+", sender or "")}
+    return out
+
+
 def rep_on_thread(db: Session, recipients: str, sender: str | None) -> str | None:
     """The job belongs to the rep copied on the email (Drew or Garner on To/CC); nobody copied = the owner's own job.
 
@@ -913,7 +922,7 @@ def rep_on_thread(db: Session, recipients: str, sender: str | None) -> str | Non
     emails = lambda text: {a.lower() for a in re.findall(r"[\w.+-]+@[\w.-]+", text or "")}  # noqa: E731
     addresses = emails(recipients) - emails(sender)  # "Delani Smith <delani@...>" works too
     # Also skip anyone who has sent order emails before: she's copied on the owner's forwarded copies too.
-    senders = set().union(*(emails(s) for s in db.scalars(select(IntakeEmail.sender).distinct())))
+    senders = order_senders(db)
     for rep in db.scalars(select(User).where(User.role == "rep", User.active).order_by(User.id)):
         if rep.email.lower() in addresses and rep.email.lower() not in senders:
             return rep.name
@@ -1131,6 +1140,7 @@ class Reconciled(BaseModel):
     qb_paid: Decimal = Field(ge=0)
     last_invoice_date: date
     note: str = Field(default="", max_length=200)
+    rep: str | None = None  # rep's name, when known; otherwise worked out from the order emails
 
 
 CO_NOTE = "From ready-to-order email (change order / add-on)"
@@ -1144,7 +1154,7 @@ def reconcile_jobs(body: list[Reconciled], request: Request, db: Session = Depen
     """
     check_intake_token(request)
     owner = automation_user(db)
-    senders = {s.lower() for s in re.findall(r"[\w.+-]+@[\w.-]+", " ".join(db.scalars(select(IntakeEmail.sender))))}
+    senders = order_senders(db)
     reps = {u.name: u for u in db.scalars(select(User).where(User.role.in_(("rep", "owner"))))}
     stale = date.today() - timedelta(days=30)
     out = []
@@ -1172,7 +1182,7 @@ def reconcile_jobs(body: list[Reconciled], request: Request, db: Session = Depen
         # Rep: whoever was copied on the order emails, never the person who sends them; nobody = the owner.
         named = [e.parsed.get("rep_name") for e in db.scalars(select(IntakeEmail).where(IntakeEmail.job_id == job.id))]
         named = [n for n in named if n in reps and reps[n].email.lower() not in senders]
-        rep = reps[named[0]] if named else owner
+        rep = reps[r.rep] if r.rep in reps else reps[named[0]] if named else owner
         if job.rep_id != rep.id:
             changes.append(f"rep -> {rep.name}")
             job.rep_id = rep.id
