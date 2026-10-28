@@ -912,8 +912,10 @@ def rep_on_thread(db: Session, recipients: str, sender: str | None) -> str | Non
     """
     emails = lambda text: {a.lower() for a in re.findall(r"[\w.+-]+@[\w.-]+", text or "")}  # noqa: E731
     addresses = emails(recipients) - emails(sender)  # "Delani Smith <delani@...>" works too
+    # Also skip anyone who has sent order emails before: she's copied on the owner's forwarded copies too.
+    senders = set().union(*(emails(s) for s in db.scalars(select(IntakeEmail.sender).distinct())))
     for rep in db.scalars(select(User).where(User.role == "rep", User.active).order_by(User.id)):
-        if rep.email.lower() in addresses:
+        if rep.email.lower() in addresses and rep.email.lower() not in senders:
             return rep.name
     return None
 
@@ -1123,6 +1125,71 @@ def import_invoices(body: list[ImportedInvoice], request: Request, db: Session =
     return {"created": len(created), "skipped": skipped}
 
 
+class Reconciled(BaseModel):
+    job_id: int
+    qb_total: Decimal = Field(ge=0)
+    qb_paid: Decimal = Field(ge=0)
+    last_invoice_date: date
+    note: str = Field(default="", max_length=200)
+
+
+CO_NOTE = "From ready-to-order email (change order / add-on)"
+
+
+@app.post("/api/intake/reconcile")
+def reconcile_jobs(body: list[Reconciled], request: Request, db: Session = Depends(get_db)):
+    """Bring portal jobs in line with QuickBooks: contract total, money received, rep from the order emails, status.
+
+    QuickBooks invoices already include change orders, so change orders the emails added are replaced by its total.
+    """
+    check_intake_token(request)
+    owner = automation_user(db)
+    senders = {s.lower() for s in re.findall(r"[\w.+-]+@[\w.-]+", " ".join(db.scalars(select(IntakeEmail.sender))))}
+    reps = {u.name: u for u in db.scalars(select(User).where(User.role.in_(("rep", "owner"))))}
+    stale = date.today() - timedelta(days=30)
+    out = []
+    for r in body:
+        job = load_job(db, r.job_id)
+        changes = []
+        for e in [e for e in job.ledger if e.line == 2 and e.note == CO_NOTE]:
+            db.delete(e)
+            job.ledger.remove(e)
+            changes.append("email change order removed")
+        other_cos = sum((e.amount for e in job.ledger if e.line == 2), Decimal(0))
+        if job.invoice_total != r.qb_total - other_cos:
+            changes.append(f"total {job.invoice_total} -> {r.qb_total - other_cos}")
+            job.invoice_total = r.qb_total - other_cos
+
+        collected = sum((p.amount for p in job.payments if p.status == "received"), Decimal(0))
+        if r.qb_paid - collected >= Decimal("0.01"):
+            db.add(Payment(job_id=job.id, amount=r.qb_paid - collected, method="other", payment_type="progress",
+                           status="received", received_date=r.last_invoice_date, created_by=owner.id,
+                           note=f"QuickBooks reconciliation {r.note}".strip()))
+            changes.append(f"payment {r.qb_paid - collected}")
+        elif collected - r.qb_paid >= Decimal("0.01"):
+            changes.append(f"CHECK: portal shows {collected} received, QuickBooks {r.qb_paid}")
+
+        # Rep: whoever was copied on the order emails, never the person who sends them; nobody = the owner.
+        named = [e.parsed.get("rep_name") for e in db.scalars(select(IntakeEmail).where(IntakeEmail.job_id == job.id))]
+        named = [n for n in named if n in reps and reps[n].email.lower() not in senders]
+        rep = reps[named[0]] if named else owner
+        if job.rep_id != rep.id:
+            changes.append(f"rep -> {rep.name}")
+            job.rep_id = rep.id
+
+        delivered = db.scalar(select(Delivery.id).where(Delivery.job_id == job.id).limit(1)) is not None
+        done = delivered or r.last_invoice_date < stale
+        paid_up = r.qb_paid >= r.qb_total
+        status = ("Closed" if paid_up else "Installed") if done else job.status
+        if status != job.status:
+            changes.append(f"status {job.status} -> {status}")
+            job.status = status
+            job.closed_at = datetime.now(timezone.utc) if status == "Closed" else None
+        out.append({"job_id": job.id, "job": job.name, "changes": changes})
+    db.commit()
+    return out
+
+
 @app.post("/api/intake/email")
 async def intake_email(
     request: Request,
@@ -1273,7 +1340,8 @@ def rep_stats(period: str = "year", db: Session = Depends(get_db), _=Depends(own
 def commission_is_due(job: Job, w: dict) -> bool:
     """Closed, paid in full, every cost approved, not frozen and not already paid."""
     return (job.status == "Closed" and not job.frozen and not job.commission_paid_at
-            and Decimal(w["balance_due"]) <= 0 and not w["costs_waiting"] and Decimal(w["commission"]) > 0)
+            and Decimal(w["balance_due"]) <= 0 and not w["costs_waiting"] and not w["material_pending"]
+            and Decimal(w["commission"]) > 0)
 
 
 @app.get("/api/collections")

@@ -617,3 +617,38 @@ def test_rep_stats():
     assert drew["commission_pending"] == "5400.00" and drew["missing_costs"] == 1
     assert owner.get("/api/reps/stats?period=week").status_code == 422
     assert client("drew@x.com", "drewpass1").get("/api/reps/stats").status_code == 403
+
+
+def test_reconcile_with_quickbooks(monkeypatch):
+    from app import inbox
+    from app.db import SessionLocal
+    from app.models import User
+    owner = client("skyler@x.com", "ownerpass")
+    with SessionLocal() as db:  # Delani sends the order emails and is copied on the owner's forwards
+        db.add(User(name="Delani", email="delani@x.com", password_hash="x", role="rep"))
+        db.commit()
+    monkeypatch.setenv("INTAKE_TOKEN", "secret")
+    bot = TestClient(app, headers={"x-intake-token": "secret"})
+    replies = {}
+    monkeypatch.setattr(inbox, "read_rto", lambda subject, body, pdfs: replies[subject])
+
+    def send(mid, subject, sender, recipients, **p):
+        replies[subject] = {"is_vendor_reply": False, "is_change_order": False, **p}
+        return bot.post("/api/intake/email", data={"message_id": mid, "subject": subject, "body": "b",
+                                                   "sender": sender, "recipients": recipients}).json()
+
+    job = send("a", "READY TO ORDER: Echo Canyon", "Delani <delani@x.com>", "skyler@x.com", job_name="Echo Canyon",
+               invoice_total=0)
+    # Owner's forward copies Delani; she must not become the rep.
+    send("b", "READY TO ORDER: Echo Canyon Change Order", "skyler@x.com", "delani@x.com, mike@hci.com",
+         job_name="Echo Canyon", is_change_order=True, invoice_total=567.97)
+    jid = job["job_id"]
+    assert owner.get(f"/api/jobs/{jid}").json()["rep_name"] == "Skyler"
+
+    r = bot.post("/api/intake/reconcile", json=[{"job_id": jid, "qb_total": "13312.82", "qb_paid": "13312.82",
+                                                 "last_invoice_date": "2026-05-11"}]).json()
+    j = owner.get(f"/api/jobs/{jid}").json()
+    assert line(j, 3) == "13312.82" and j["waterfall"]["balance_due"] == "0.00"
+    assert j["status"] == "Closed" and j["rep_name"] == "Skyler" and "email change order removed" in r[0]["changes"]
+    # Paid-up but material cost unknown: commission is not due yet.
+    assert owner.get("/api/collections?period=year").json()["commission_due"] == []
