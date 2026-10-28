@@ -289,6 +289,30 @@ def get_job(job_id: int, db: Session = Depends(get_db), _=Depends(owner_only)):
     return job_out(load_job(db, job_id))
 
 
+@app.delete("/api/jobs/{job_id}")
+def delete_job(job_id: int, db: Session = Depends(get_db), _=Depends(owner_only)):
+    """Remove a job for good (test or mistaken jobs). The audit log keeps a record of what was deleted.
+
+    Crew pay (hours, assembly) is never deleted with it: those must be removed or moved first, so nobody loses pay.
+    """
+    job = load_job(db, job_id)
+    if job.labor or job.assembly:
+        raise HTTPException(409, f"Remove its {len(job.labor)} hours and {len(job.assembly)} assembly entries first; "
+                                 "they're crew pay records.")
+    for p in job.payments:
+        db.delete(p)
+    for e in job.ledger:
+        db.delete(e)
+    # Keep these records, just unhook them from the job.
+    for model in (Reimbursement, DesignEntry, IntakeEmail, Delivery):
+        for row in db.scalars(select(model).where(model.job_id == job_id)):
+            row.job_id = None
+    db.flush()  # write the unhooking before the job row goes
+    db.delete(job)
+    db.commit()
+    return {"ok": True}
+
+
 @app.patch("/api/jobs/{job_id}")
 def update_job(job_id: int, body: JobPatch, db: Session = Depends(get_db), _=Depends(owner_only)):
     job = get_or_404(db, Job, job_id)

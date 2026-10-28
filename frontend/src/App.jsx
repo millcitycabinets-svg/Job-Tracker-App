@@ -316,6 +316,13 @@ function JobDetail({ id }) {
     }
   });
 
+  const [destroy, destroying, destroyError] = useSubmit(async () => {
+    const typed = prompt(`Permanently delete "${job.name}" and its payments and cost entries? This can't be undone.\n\nType DELETE to confirm.`);
+    if (typed?.trim().toUpperCase() !== "DELETE") return;
+    await api(`/jobs/${id}`, { method: "DELETE" });
+    location.hash = "#/jobs";
+  });
+
   if (error) return <ErrorText error={error} />;
   if (!job) return <p className="muted">Loading…</p>;
   const w = job.waterfall;
@@ -346,8 +353,12 @@ function JobDetail({ id }) {
           </div>
         </form>
       ) : (
-        <button className="secondary" onClick={() => setEditing({ ...job })}>Edit job</button>
+        <div className="row between">
+          <button className="secondary" onClick={() => setEditing({ ...job })}>Edit job</button>
+          <button className="secondary danger" onClick={destroy} disabled={destroying}>Delete job</button>
+        </div>
       )}
+      <ErrorText error={destroyError} />
 
       <section className="card">
         <h2>Profit waterfall</h2>

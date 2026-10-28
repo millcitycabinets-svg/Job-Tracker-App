@@ -139,3 +139,4 @@ input:focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible
 .jrow-amt { font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .jrow-amt.warn { font-size: 13px; }
 .jrow-status { width: 96px; flex: none; min-height: 32px; padding: 0.2rem 0.3rem; font-size: 12px; }
+button.secondary.danger { color: var(--error); border-color: var(--error); }

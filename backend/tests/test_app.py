@@ -585,3 +585,22 @@ def test_rep_comes_from_email_recipients(monkeypatch):
     # Claude's guess is ignored when we know who was copied; no rep copied = the owner's own sale.
     assert job_rep("1", "READY TO ORDER: Alpha", "skyler@x.com, m.j@highland.com") == "Skyler"
     assert job_rep("2", "READY TO ORDER: Bravo", "skyler@x.com, Drew <DREW@x.com>") == "Drew"
+
+
+def test_delete_job_keeps_pay_and_reimbursements(monkeypatch):
+    owner = client("skyler@x.com", "ownerpass")
+    jid = make_job(owner, name="Test job")["id"]
+    owner.post(f"/api/jobs/{jid}/ledger", json={"line": 2, "amount": "500"})
+    r = owner.post(f"/api/jobs/{jid}/payments", data={"amount": "1000", "method": "check", "status": "received",
+                                                     "received_date": "2026-10-01"})
+    assert r.status_code == 200, r.text
+    omar = client("omar@x.com", "omarpass")
+    lid = omar.post("/api/labor", json={"job_id": jid, "hours": 2}).json()["id"]
+    r = owner.delete(f"/api/jobs/{jid}")
+    assert r.status_code == 409 and "hours" in r.json()["detail"]  # crew pay is never deleted silently
+    assert owner.delete(f"/api/labor/{lid}").status_code == 200
+    assert omar.delete(f"/api/jobs/{jid}").status_code == 403
+    assert owner.delete(f"/api/jobs/{jid}").status_code == 200
+    assert owner.get(f"/api/jobs/{jid}").status_code == 404
+    assert [j["name"] for j in owner.get("/api/jobs").json()] == []
+    assert any(a["action"] == "delete" and a["table"] == "jobs" for a in owner.get("/api/audit").json())

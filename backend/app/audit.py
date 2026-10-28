@@ -43,7 +43,8 @@ def _write_audit(session, flush_context):
                     if new is not None:
                         changes[key] = [None, new]
                 elif action == "delete":
-                    changes[key] = [getattr(obj, key), None]
+                    # Only what's already loaded: the row is gone, so a deferred column (a file) can't be fetched now.
+                    changes[key] = [state.dict.get(key), None]
                 elif hist.has_changes():
                     changes[key] = [hist.deleted[0] if hist.deleted else None, hist.added[0] if hist.added else None]
             if action == "update" and not changes:
