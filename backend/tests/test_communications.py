@@ -68,11 +68,13 @@ def test_oauth_state_consumed_and_encrypted(workspace,configured):
     assert client.get(P+'/gmail/callback',params={'state':state,'code':'code'},follow_redirects=False).status_code==400
 
 
-def test_oauth_rejects_different_mailbox(workspace,configured,monkeypatch):
+def test_oauth_allows_authorized_company_mailbox_with_legacy_login(workspace,configured,monkeypatch):
     original=c.provider
     monkeypatch.setattr(c,'provider',lambda method,url,**kw: {'email':'rep_b@workspace.test','email_verified':True,'hd':'workspace.test'} if 'userinfo' in url else original(method,url,**kw))
     client=workspace.client();state=parse_qs(urlparse(ok(client.post(P+'/gmail/connect'))['url']).query)['state'][0]
-    assert client.get(P+'/gmail/callback',params={'state':state,'code':'code'},follow_redirects=False).status_code==403
+    assert client.get(P+'/gmail/callback',params={'state':state,'code':'code'},follow_redirects=False).status_code==303
+    with workspace.session() as db:
+        assert db.get(Mailbox, workspace.user_ids['rep_a']).email == 'rep_b@workspace.test'
 
 
 def test_gmail_send_is_idempotent_and_scoped(workspace,configured):
@@ -174,3 +176,21 @@ def test_signed_campaign_bounce_blocks_future_sends(workspace,configured):
 def test_stale_account_header_rejects_communications(workspace,configured):
     assert workspace.client().get(P+'/status',headers={'X-Workspace-User':str(workspace.user_ids['rep_b'])}).status_code==401
     assert not configured
+
+
+def test_mailbox_cannot_be_connected_to_two_accounts(workspace,configured):
+    with workspace.session() as db:
+        db.add(Mailbox(user_id=workspace.user_ids['rep_b'],email='rep_a@workspace.test',encrypted_token=c.cipher().encrypt(b'existing').decode()));db.commit()
+    client=workspace.client();state=parse_qs(urlparse(ok(client.post(P+'/gmail/connect'))['url']).query)['state'][0]
+    assert client.get(P+'/gmail/callback',params={'state':state,'code':'code'},follow_redirects=False).status_code==409
+    with workspace.session() as db:
+        assert db.get(Mailbox,workspace.user_ids['rep_a']) is None
+
+
+def test_mailbox_audit_does_not_retain_encrypted_grant(workspace,configured):
+    from app.models import AuditLog
+    client=workspace.client();state=parse_qs(urlparse(ok(client.post(P+'/gmail/connect'))['url']).query)['state'][0]
+    assert client.get(P+'/gmail/callback',params={'state':state,'code':'code'},follow_redirects=False).status_code==303
+    with workspace.session() as db:
+        audit=db.scalar(select(AuditLog).where(AuditLog.table_name=='workspace_mailboxes'))
+        assert audit.changes['encrypted_token']==['***','***']

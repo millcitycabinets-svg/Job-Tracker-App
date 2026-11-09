@@ -156,16 +156,25 @@ def callback(request: Request, state: str = '', code: str = '', error: str = '',
     if account.get('hd','').lower() != setting('GOOGLE_WORKSPACE_DOMAIN').lower() or not account.get('email_verified'):
         raise HTTPException(403,'Connect your company Google Workspace mailbox.')
     address = email(account.get('email'))
-    # The existing Job Tracker login email identifies the authorized mailbox owner.
-    if address != user.email.lower():
-        raise HTTPException(403,'Use the company mailbox matching your Job Tracker account email. Ask an administrator to correct your account email if needed.')
+    # OAuth state binds this grant to the signed-in workspace account. Legacy
+    # Job Tracker logins need not use the same address as the company mailbox.
+    other = db.scalar(select(Mailbox).where(Mailbox.email == address, Mailbox.user_id != user.id))
+    if other:
+        raise HTTPException(409, 'This mailbox is already connected to another workspace account.')
+    previous = db.get(Mailbox, user.id)
+    if previous and previous.email != address:
+        raise HTTPException(409, 'Disconnect your current mailbox before choosing a different mailbox.')
     if not token.get('refresh_token'):
         raise HTTPException(400,'Google did not provide offline access. Reconnect and approve access.')
     row = db.get(Mailbox,user.id) or Mailbox(user_id=user.id)
     row.email = address
     row.encrypted_token = cipher().encrypt(token['refresh_token'].encode()).decode()
     db.add(row)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, 'This mailbox was just connected elsewhere. Review your connections.') from None
     return RedirectResponse('/#/communications?gmail=connected',status_code=303)
 
 

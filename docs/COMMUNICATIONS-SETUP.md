@@ -13,9 +13,10 @@ create a Web application OAuth client with this exact redirect:
 `https://jobs.millcitycabinetry.com/api/workspace/communications/gmail/callback`
 
 Requested scopes: `openid`, `email`, `gmail.send`, `gmail.readonly`. Users grant
-access individually. Each verified company mailbox must match that user's existing
-Job Tracker login email. Correct an account email deliberately if needed; do not
-silently connect somebody else's mailbox. Reading is restricted in the app to
+access individually. The OAuth state binds the verified company mailbox to the
+signed-in workspace account, even if its legacy Job Tracker login uses a different
+email address. A mailbox cannot connect to two team accounts. Disconnect the
+current mailbox explicitly before choosing a different one. Reading is restricted in the app to
 conversations involving the selected accessible lead and the user's own mailbox.
 Only plain text is displayed; HTML/attachments are not rendered in this pilot.
 
