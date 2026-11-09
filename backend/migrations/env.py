@@ -1,6 +1,6 @@
 from alembic import context
 
-from app import models, workspace_models, contact_import_models, monday_import  # noqa: F401
+from app import communication_models, models, workspace_models, contact_import_models, monday_import  # noqa: F401
 from app.db import Base, engine
 
 def run_migrations(connection):

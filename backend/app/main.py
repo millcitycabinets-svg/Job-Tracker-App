@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session, selectinload
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import audit, inbox, migrate  # noqa: F401  (audit registers its listener)
+from . import communications, communication_models
 from . import workspace, workspace_models  # noqa: F401 (registers additive workspace tables)
 from . import contact_imports, contact_import_models, monday_import  # noqa: F401
 from .auth import check_password, current_user, hash_password, owner_only, require, session_fingerprint
@@ -1597,6 +1598,7 @@ def audit_log(table: str | None = None, row_id: int | None = None, limit: int = 
 # ---------- frontend ----------
 
 app.include_router(workspace.router)
+app.include_router(communications.router)
 app.include_router(contact_imports.router)
 
 DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"

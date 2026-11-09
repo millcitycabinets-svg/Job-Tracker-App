@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from .models import AuditLog, Base
 
-SECRET_FIELDS = {"password_hash"}
+SECRET_FIELDS = {"password_hash", "encrypted_token"}
 
 
 def _plain(value):
