@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session, selectinload
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import audit, inbox, migrate  # noqa: F401  (audit registers its listener)
+from . import workspace, workspace_models  # noqa: F401 (registers additive workspace tables)
 from .auth import check_password, current_user, hash_password, owner_only, require
 from .db import get_db
 from .models import (BOX_RATE, JOB_STATUSES, LEDGER_LINES, MOD_RATE, PAY_TYPES, ROLES, TRANSITIONS, AssemblyEntry, AuditLog,
@@ -296,6 +297,8 @@ def delete_job(job_id: int, db: Session = Depends(get_db), _=Depends(owner_only)
     Crew pay (hours, assembly) is never deleted with it: those must be removed or moved first, so nobody loses pay.
     """
     job = load_job(db, job_id)
+    if db.scalar(select(workspace_models.Opportunity.id).where(workspace_models.Opportunity.linked_job_id == job_id)):
+        raise HTTPException(409, "This job is linked to a sales opportunity. Keep the linked job for its shared history.")
     if job.labor or job.assembly:
         raise HTTPException(409, f"Remove its {len(job.labor)} hours and {len(job.assembly)} assembly entries first; "
                                  "they're crew pay records.")
@@ -1586,6 +1589,8 @@ def audit_log(table: str | None = None, row_id: int | None = None, limit: int = 
 
 
 # ---------- frontend ----------
+
+app.include_router(workspace.router)
 
 DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 if DIST.exists():

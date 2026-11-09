@@ -6,7 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
 
-ROLES = ("owner", "designer", "crew", "rep")
+ROLES = ("owner", "designer", "operations", "crew", "rep")
 # How crew get paid: hourly logs hours, per_box logs assembly at their box rate, salary logs deliveries only.
 PAY_TYPES = ("hourly", "per_box", "salary")
 JOB_STATUSES = ("Ordered", "Assembled", "Delivered", "Installed", "Punch", "Closed")

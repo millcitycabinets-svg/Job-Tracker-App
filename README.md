@@ -2,6 +2,8 @@
 
 Job profitability, crew hours and collections for Mill City Cabinetry. Spec: `docs/JOB_TRACKER_SPEC.md`.
 
+**Sales + Operations pilot:** see [PILOT.md](PILOT.md) for the localhost launch command, fictional test accounts, and hands-on handoff test. This branch adds a persistent CRM, scoped operations requests, personal dashboards/views, and direct reads from the existing Job Tracker finance records. Production data and communication providers are not connected by the pilot launcher. API details: [WORKSPACE_API.md](WORKSPACE_API.md).
+
 ## What works now
 
 - Personal logins with roles: owner, crew, designer, rep. Sessions last 30 days.

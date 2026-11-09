@@ -3,3 +3,8 @@ frontend/dist/
 __pycache__/
 .pytest_cache/
 .env
+.venv/
+.pilot/
+*.db
+*.db-shm
+*.db-wal

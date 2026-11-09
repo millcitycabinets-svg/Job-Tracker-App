@@ -1,6 +1,6 @@
 from alembic import context
 
-from app import models  # noqa: F401  (registers every table on Base.metadata)
+from app import models, workspace_models  # noqa: F401  (registers every table on Base.metadata)
 from app.db import Base, engine
 
 with engine.connect() as connection:

@@ -429,20 +429,19 @@ def test_migrations_match_models_and_adopt_old_databases():
     upgrade()  # fresh database: builds everything from migrations
     command.check(Config(str(ALEMBIC_INI)))  # raises if models and migrations disagree
 
-    # A database made by create_all before migrations existed, missing the payments table and new column.
-    reset()
-    Base.metadata.create_all(engine)
-    with engine.begin() as conn:
-        conn.execute(text("DROP TABLE intake_emails"))  # added after migrations existed
-        conn.execute(text("DROP TABLE deliveries"))
-        conn.execute(text("ALTER TABLE users DROP COLUMN pay_type, DROP COLUMN box_rate"))
-        for table in ("labor", "designs"):  # approval columns also came later
-            conn.execute(text(f"ALTER TABLE {table} DROP COLUMN status, DROP COLUMN status_note, DROP COLUMN paid_at"))
-        conn.execute(text("DROP TABLE payments"))
-        conn.execute(text("ALTER TABLE jobs DROP COLUMN commission_paid_at"))
-    upgrade()
-    assert "payments" in inspect(engine).get_table_names()
-    assert "commission_paid_at" in [c["name"] for c in inspect(engine).get_columns("jobs")]
+    # Recreate both pre-migration schema generations. Dropping the version marker
+    # models databases originally created via create_all, without PostgreSQL-only
+    # ALTER syntax or accidentally retaining newer workspace tables.
+    for legacy_revision in ("0001", "0002"):
+        reset()
+        command.upgrade(Config(str(ALEMBIC_INI)), legacy_revision)
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE alembic_version"))
+        upgrade()
+        assert "payments" in inspect(engine).get_table_names()
+        assert "workspace_opportunities" in inspect(engine).get_table_names()
+        assert "commission_paid_at" in [c["name"] for c in inspect(engine).get_columns("jobs")]
+        command.check(Config(str(ALEMBIC_INI)))
     reset()
 
 
