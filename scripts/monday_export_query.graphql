@@ -1,0 +1,26 @@
+# Read only. All group cursors must be exhausted before importing.
+# This query preserves raw column JSON and subitem metadata without sending or editing anything.
+query MillCityCurrentMigrationBatch {
+  boards(ids: [18383996445]) {
+    id
+    name
+    groups(ids: ["group_mm2tdmmv", "group_mm2tgr4b", "group_mm57zhzt", "group_mm32gnha", "group_mm33j1f3", "group_mm2twmct"]) {
+      id
+      title
+      items_page(limit: 100) {
+        cursor
+        items {
+          id
+          name
+          url
+          created_at
+          updated_at
+          state
+          group { id title }
+          column_values { id type text value }
+          subitems { id name url created_at updated_at column_values { id type text value } }
+        }
+      }
+    }
+  }
+}

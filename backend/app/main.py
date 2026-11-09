@@ -18,7 +18,8 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from . import audit, inbox, migrate  # noqa: F401  (audit registers its listener)
 from . import workspace, workspace_models  # noqa: F401 (registers additive workspace tables)
-from .auth import check_password, current_user, hash_password, owner_only, require
+from . import contact_imports, contact_import_models, monday_import  # noqa: F401
+from .auth import check_password, current_user, hash_password, owner_only, require, session_fingerprint
 from .db import get_db
 from .models import (BOX_RATE, JOB_STATUSES, LEDGER_LINES, MOD_RATE, PAY_TYPES, ROLES, TRANSITIONS, AssemblyEntry, AuditLog,
                      Delivery, Job, PAYMENT_METHODS, PAYMENT_TYPES, DesignEntry, IntakeEmail, LaborEntry, LedgerEntry, Payment, Reimbursement, User)
@@ -36,9 +37,10 @@ if HTTPS_ONLY and not os.environ.get("SESSION_SECRET"):
     raise RuntimeError("SESSION_SECRET must be set in production")
 
 app = FastAPI(title="Mill City Job Tracker", lifespan=lifespan)
+app.state.session_secret = os.environ.get("SESSION_SECRET", "dev-only-secret")
 app.add_middleware(
     SessionMiddleware,
-    secret_key=os.environ.get("SESSION_SECRET", "dev-only-secret"),
+    secret_key=app.state.session_secret,
     https_only=HTTPS_ONLY,
     same_site="lax",
     max_age=30 * 24 * 3600,
@@ -86,12 +88,16 @@ def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
         FAILED_LOGINS[email] = recent + [time.monotonic()]
         raise HTTPException(401, "Wrong email or password")
     FAILED_LOGINS.pop(email, None)
+    request.session.clear()
     request.session["user_id"] = user.id
+    request.session["credential_version"] = session_fingerprint(user, request.app.state.session_secret)
     return user_out(user)
 
 
 @app.post("/api/logout")
-def logout(request: Request):
+def logout(request: Request, db: Session = Depends(get_db)):
+    if request.headers.get("X-Workspace-User") is not None:
+        current_user(request, db)
     request.session.clear()
     return {"ok": True}
 
@@ -1591,6 +1597,7 @@ def audit_log(table: str | None = None, row_id: int | None = None, limit: int = 
 # ---------- frontend ----------
 
 app.include_router(workspace.router)
+app.include_router(contact_imports.router)
 
 DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 if DIST.exists():

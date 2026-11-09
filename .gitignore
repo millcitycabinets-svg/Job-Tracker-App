@@ -5,6 +5,8 @@ __pycache__/
 .env
 .venv/
 .pilot/
+.migration/
+.deployment/
 *.db
 *.db-shm
 *.db-wal

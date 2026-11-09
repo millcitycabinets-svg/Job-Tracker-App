@@ -1,0 +1,13 @@
+.git
+.venv
+.pilot
+.migration
+.deployment
+**/__pycache__
+**/.pytest_cache
+frontend/node_modules
+frontend/dist
+**/.env
+**/.env.*
+**/*.db
+docs/screenshots

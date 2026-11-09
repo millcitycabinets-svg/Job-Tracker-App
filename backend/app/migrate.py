@@ -9,7 +9,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 
 from .db import engine
 
@@ -18,11 +18,19 @@ ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 
 def upgrade():
     cfg = Config(str(ALEMBIC_INI))
-    tables = set(inspect(engine).get_table_names())
-    if "jobs" in tables and "alembic_version" not in tables:
-        # Database was created before migrations existed: mark where it stands, then upgrade from there.
-        command.stamp(cfg, "0002" if "payments" in tables else "0001")
-    command.upgrade(cfg, "head")
+    with engine.begin() as connection:
+        if engine.dialect.name == "sqlite":
+            # sqlite3 legacy mode otherwise starts no transaction for DDL.
+            connection.exec_driver_sql("BEGIN")
+        elif engine.dialect.name == "postgresql":
+            # Rolling deploys may start more than one worker. Only one migrates.
+            connection.execute(text("SELECT pg_advisory_xact_lock(18383996445)"))
+        cfg.attributes["connection"] = connection
+        tables = set(inspect(connection).get_table_names())
+        if "jobs" in tables and "alembic_version" not in tables:
+            # A legacy pre-Alembic database: stamp the existing schema first.
+            command.stamp(cfg, "0002" if "payments" in tables else "0001")
+        command.upgrade(cfg, "head")
 
 
 if __name__ == "__main__":
