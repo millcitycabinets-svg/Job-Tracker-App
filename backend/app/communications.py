@@ -506,6 +506,9 @@ def send_campaign(id:int,data:CampaignSend,db:Session=Depends(get_db),user=Depen
         raise HTTPException(409,'Recipients or permissions changed. Review this campaign again.')
     if row.audience!='subscribers':
         raise HTTPException(409,'Prospect campaigns need a separate approved provider.')
+    mailbox=db.get(Mailbox,user.id)
+    if not mailbox:
+        raise HTTPException(409,'Connect your company Gmail before sending campaigns so customer replies reach you.')
     eligible=[item for item in preview['recipients'] if item['eligible']]
     if not eligible:
         raise HTTPException(409,'No eligible recipients to send.')
@@ -519,7 +522,7 @@ def send_campaign(id:int,data:CampaignSend,db:Session=Depends(get_db),user=Depen
         if not fresh:
             output.append(public_message(receipt));continue
         try:
-            result=provider('POST','https://api.resend.com/emails',headers={'Authorization':'Bearer '+setting('RESEND_API_KEY'),'Idempotency-Key':f'mcc-campaign-{id}-{lead.id}'},json={'from':setting('CAMPAIGN_FROM_EMAIL'),'to':[address],'subject':row.subject,'text':body,'headers':{'List-Unsubscribe':'<'+unsubscribe+'>','List-Unsubscribe-Post':'List-Unsubscribe=One-Click'}})
+            result=provider('POST','https://api.resend.com/emails',headers={'Authorization':'Bearer '+setting('RESEND_API_KEY'),'Idempotency-Key':f'mcc-campaign-{id}-{lead.id}'},json={'from':setting('CAMPAIGN_FROM_EMAIL'),'reply_to':mailbox.email,'to':[address],'subject':row.subject,'text':body,'headers':{'List-Unsubscribe':'<'+unsubscribe+'>','List-Unsubscribe-Post':'List-Unsubscribe=One-Click'}})
             output.append(finish(db,receipt,'resend:'+result['id']))
         except HTTPException:
             receipt.status='unknown';db.commit();break

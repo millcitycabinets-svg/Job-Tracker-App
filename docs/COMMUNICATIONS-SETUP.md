@@ -66,6 +66,9 @@ recovery through the provider after STOP; the app cannot override an opt-out.
 
 ## Customer campaigns
 
+Each sender must connect their company Gmail before dispatch. Campaigns set Reply-To
+to that connected mailbox, so customer replies can be read in the workspace.
+
 Resend is for subscribed recipients only. Its policy prohibits scraped/purchased
 list outreach. Prospect drafts are separate and cannot use this provider.
 Verify a sending domain and configure SPF/DKIM, choose the From mailbox, and

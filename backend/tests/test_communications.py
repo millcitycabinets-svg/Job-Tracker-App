@@ -115,12 +115,15 @@ def campaign(client,ids,audience='subscribers'):
 
 
 def test_campaign_preview_suppression_dedupe_and_review(workspace,configured):
+    mailbox(workspace)
     client=workspace.client();a=workspace.create(email='customer@example.test');b=workspace.create(email='customer@example.test');d=workspace.create(email='no-consent@example.test');permit(client,a)
     row=campaign(client,[a['id'],b['id'],d['id']]);preview=ok(client.get(P+f'/campaigns/{row["id"]}/preview'))
     assert sum(v['eligible'] for v in preview['recipients'])==1
     assert client.post(P+f'/campaigns/{row["id"]}/send',json={'review_token':'0'*64}).status_code==409
     sent=ok(client.post(P+f'/campaigns/{row["id"]}/send',json={'review_token':preview['review_token']}))
     assert len(sent['messages'])==1
+    sent_payload=next(kw['json'] for _,url,kw in configured if url=='https://api.resend.com/emails')
+    assert sent_payload['reply_to']=='rep_a@workspace.test'
     assert client.post(P+f'/campaigns/{row["id"]}/send',json={'review_token':preview['review_token']}).status_code==409
     assert sum(url=='https://api.resend.com/emails' for _,url,_ in configured)==1
     assert workspace.client('rep_b').get(P+f'/campaigns/{row["id"]}/preview').status_code==404
@@ -159,6 +162,7 @@ def test_signed_campaign_bounce_blocks_future_sends(workspace,configured):
     import json
     from datetime import datetime, timezone
     from svix.webhooks import Webhook
+    mailbox(workspace)
     client=workspace.client();lead=workspace.create(email='customer@example.test');permit(client,lead)
     row=campaign(client,[lead['id']]);preview=ok(client.get(P+f'/campaigns/{row["id"]}/preview'))
     ok(client.post(P+f'/campaigns/{row["id"]}/send',json={'review_token':preview['review_token']}))
@@ -194,3 +198,12 @@ def test_mailbox_audit_does_not_retain_encrypted_grant(workspace,configured):
     with workspace.session() as db:
         audit=db.scalar(select(AuditLog).where(AuditLog.table_name=='workspace_mailboxes'))
         assert audit.changes['encrypted_token']==['***','***']
+
+
+def test_campaign_requires_connected_reply_mailbox(workspace,configured):
+    client=workspace.client();lead=workspace.create(email='customer@example.test');permit(client,lead)
+    row=campaign(client,[lead['id']]);preview=ok(client.get(P+f'/campaigns/{row["id"]}/preview'))
+    response=client.post(P+f'/campaigns/{row["id"]}/send',json={'review_token':preview['review_token']})
+    assert response.status_code==409
+    assert 'Gmail' in response.json()['detail']
+    assert not configured
