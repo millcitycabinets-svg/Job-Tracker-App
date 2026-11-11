@@ -35,6 +35,7 @@ export function Modal({ title, onClose, children, drawer = false }) {
     const previous = document.activeElement, node = panel.current;
     node.querySelector("input,select,textarea,button,a[href]")?.focus();
     const key = event => {
+      if ([...document.querySelectorAll('[role="dialog"]')].at(-1) !== node) return;
       if (event.key === "Escape") closeRef.current();
       if (event.key === "Tab") {
         const items = [...node.querySelectorAll('button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href]')].filter(el => el.offsetParent !== null);

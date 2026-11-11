@@ -1,3 +1,4 @@
+import FieldNotebooks from "./FieldNotebooks.jsx";
 import { useEffect, useState } from "react";
 import { usd, usd0 } from "./api.js";
 import { JobsList, JobDetail, NewJob, Collections, MySales, MyDesigns, MyPay, Reimbursements, Approvals, DesignPipeline, RepStats, Team, Inbox, Assembly, Deliveries, LogHours } from "./JobTracker.jsx";
@@ -25,7 +26,7 @@ export function TrackerPage({ me, path, version, refresh, notify }) {
   const owner = me.role === "owner", jobs = useResource("/tracker-jobs", version);
   const nav = owner ? [["/", "Jobs"], ["/collections", "Collections"], ["/reps", "Sales & commissions"], ["/approvals", "Approvals"], ["/designs", "Designs"], ["/hours", "Hours"], ["/assembly", "Assembly"], ["/deliveries", "Deliveries"], ["/inbox", "Quick log"], ["/team", "Team"]] : me.role === "designer" ? [["/", "My designs"], ["/pay", "My pay"], ["/reimbursements", "Reimbursements"]] : [];
   let content;
-  if (owner) { const match = path.match(/^\/jobs\/(\d+)$/); if (match) content = <JobDetail key={match[1]} id={match[1]} />; else if (path === "/new") content = <NewJob />; else content = ({ "/collections": <Collections />, "/reps": <RepStats />, "/approvals": <Approvals />, "/designs": <DesignPipeline />, "/hours": <LogHours me={me} />, "/assembly": <Assembly me={me} />, "/deliveries": <Deliveries me={me} />, "/inbox": <Inbox />, "/team": <Team /> })[path] || <JobsList />; }
+  if (owner) { const match = path.match(/^\/jobs\/(\d+)$/); if (match) content = <><JobDetail key={match[1]} id={match[1]} /><section className="ws-panel"><FieldNotebooks me={me} jobId={Number(match[1])}/></section></>; else if (path === "/new") content = <NewJob />; else content = ({ "/collections": <Collections />, "/reps": <RepStats />, "/approvals": <Approvals />, "/designs": <DesignPipeline />, "/hours": <LogHours me={me} />, "/assembly": <Assembly me={me} />, "/deliveries": <Deliveries me={me} />, "/inbox": <Inbox />, "/team": <Team /> })[path] || <JobsList />; }
   else if (me.role === "rep") content = <MySales />;
   else if (me.role === "designer") content = path === "/pay" ? <MyPay /> : path === "/reimbursements" ? <Reimbursements /> : <MyDesigns />;
   else content = <><ErrorNotice error={jobs.error} />{jobs.loading && !jobs.data ? <Loading /> : <FulfillmentTable jobs={jobs.data || []} me={me} refresh={refresh} notify={notify} />}</>;
@@ -34,8 +35,4 @@ export function TrackerPage({ me, path, version, refresh, notify }) {
 
 export { CommunicationsPage } from "./CommunicationsPage.jsx";
 
-export function ToolsPage() {
-  const rawUrl = import.meta.env.VITE_DESIGN_TOOL_URL; let designUrl = null;
-  try { const url = new URL(rawUrl); if (["http:", "https:"].includes(url.protocol)) designUrl = url.href; } catch {}
-  return <><PageHeading eyebrow="TEAM TOOLS & RESOURCES" title="Built for the way you work" description="A home for the tools your team uses every day." /><div className="ws-tools-grid"><section className="ws-panel ws-tool-card"><span className="ws-tool-symbol">⌑</span><span className="ws-eyebrow">DESIGN & ESTIMATING</span><h2>Cabinet Layout Tool</h2><p>Open the shared cabinet designer and estimator with your existing portal account.</p>{designUrl ? <a className="button" href={designUrl} target="_blank" rel="noreferrer">Open cabinet designer ↗</a> : <><span className="ws-caption">Your team’s portal address needs to be connected.</span><button className="secondary" disabled>Open cabinet designer</button></>}</section><section className="ws-panel ws-tool-card"><span className="ws-tool-symbol">▦</span><span className="ws-eyebrow">JOBS & FINANCE</span><h2>Job Tracker</h2><p>View jobs, customer payments, costs, and your role’s financial records without leaving the workspace.</p><a className="button" href="#/tracker">Open Job Tracker →</a></section><section className="ws-panel ws-tool-card"><span className="ws-tool-symbol">▱</span><span className="ws-eyebrow">MARKETING LIBRARY</span><h2>Team resources</h2><p>The shared home for brochures, campaign materials, product files, and sales tools.</p><span className="ws-caption">File storage is not connected in this pilot.</span><button className="secondary" disabled>Browse resources</button></section></div></>;
-}
+export { ToolsPage } from "./ResourcesPage.jsx";
