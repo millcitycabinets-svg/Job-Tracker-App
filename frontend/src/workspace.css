@@ -153,8 +153,8 @@ fieldset { border:0; padding:0; margin:0; min-width:0; }
 .ws-sketch-tools input[type=checkbox] { width:18px; height:18px; min-height:18px; margin:0; flex:none; }
 
 .ws-customer-tools .ws-inline-actions {display:flex;gap:10px;flex-wrap:wrap;}
-.ws-modal:has(.ws-embedded-tools) {width:calc(100vw - 24px);max-width:none;height:calc(100dvh - 24px);max-height:none;}
+.ws-modal:has(>.ws-embedded-tools) {width:calc(100vw - 24px);max-width:none;height:calc(100dvh - 24px);max-height:none;}
 .ws-embedded-tools {height:calc(100dvh - 130px);display:flex;flex-direction:column;padding:0 12px 12px;}
 .ws-embedded-tools iframe {width:100%;flex:1;min-height:0;border:1px solid #d6ddd8;border-radius:8px;background:white;}
-@media(max-width:700px){.ws-modal:has(.ws-embedded-tools){width:100vw;height:100dvh;}.ws-embedded-tools{height:calc(100dvh - 110px);padding:0 4px 4px;}}
+@media(max-width:700px){.ws-modal:has(>.ws-embedded-tools){width:100vw;height:100dvh;}.ws-embedded-tools{height:calc(100dvh - 110px);padding:0 4px 4px;}}
 .ws-modal-backdrop:has(>.ws-modal>.ws-embedded-tools){z-index:60;padding:12px;}
