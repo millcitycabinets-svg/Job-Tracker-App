@@ -98,3 +98,31 @@ fieldset { border:0; padding:0; margin:0; min-width:0; }
 
 /* Communications */
 .ws-communications-grid{display:grid;grid-template-columns:minmax(280px, .8fr) minmax(360px,1.2fr);gap:24px;margin-top:24px}.ws-communications-grid .ws-field{margin:14px 0}.ws-message{padding:16px 0;border-bottom:1px solid #e4e8e6}.ws-message pre,.ws-message-body{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;max-height:360px;overflow:auto}.ws-recipient-picker{max-height:250px;overflow:auto;display:grid;gap:10px;padding:12px 0}.ws-recipient-picker label{display:flex;align-items:center;gap:8px}.ws-communications-grid button{margin:6px 8px 6px 0}@media(max-width:850px){.ws-communications-grid{grid-template-columns:1fr}}
+
+/* Sales contact sheet: single-line rows, sticky headings, bounded rendering. */
+.ws-sales-sheet { display:flex; flex-direction:column; gap:12px; min-width:0; }
+.ws-sales-sheet .ws-page-heading { margin:0; }
+.ws-sales-sheet .ws-page-heading h1 { font-size:23px; }
+.ws-sales-sheet .ws-page-heading p { margin-top:3px; }
+.ws-sales-sheet .ws-eyebrow { display:none; }
+.ws-sales-sheet .ws-board-tabs button { padding:6px 0 9px; min-height:32px; }
+.ws-sales-sheet .ws-board-toolbar { gap:9px; }
+.ws-sheet-container { min-width:0; border:1px solid #dce1d5; border-radius:6px; overflow:hidden; background:var(--card); }
+.ws-sheet-scroll { max-height:calc(100dvh - 275px); min-height:160px; border:0; border-radius:0; }
+.ws-contact-sheet { table-layout:fixed; min-width:850px; font-size:12px; }
+.ws-contact-sheet th, .ws-contact-sheet td { padding:3px 9px; height:27px; box-sizing:border-box; border-right:1px solid #e9ece4; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ws-contact-sheet thead th { position:sticky; top:0; z-index:2; background:#eff2e9; height:30px; }
+.ws-contact-sheet th button { padding:0; min-height:23px; border:0; background:transparent!important; color:#55674f; font-size:11px; width:100%; justify-content:flex-start; text-align:left; }
+.ws-contact-sheet th:nth-child(2) { width:26%; }
+.ws-contact-sheet .ws-sheet-number { width:48px; text-align:right; color:#8b9682; background:#f6f7f1; font-size:10px; font-variant-numeric:tabular-nums; }
+.ws-contact-sheet .ws-record-link { width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; line-height:20px; }
+.ws-contact-sheet .ws-mini-avatar { display:none; }
+.ws-contact-sheet .ws-owner { display:block; overflow:hidden; text-overflow:ellipsis; }
+.ws-contact-sheet .ws-stage { padding:1px 6px; font-size:10px; line-height:17px; min-height:0; }
+.ws-contact-sheet tbody tr:nth-child(even) { background:#fafbf7; }
+.ws-contact-sheet tbody tr:hover { background:#edf4eb; }
+.ws-sheet-pagination { align-items:center; justify-content:flex-end; flex-wrap:wrap; padding:7px 10px; color:#687962; font-size:11px; }
+.ws-sheet-pagination strong { margin-right:auto; font-weight:500; }
+.ws-sheet-pagination label { display:flex; align-items:center; gap:5px; }
+.ws-sheet-pagination select, .ws-sheet-pagination button { min-height:28px; padding:3px 7px; font-size:11px; }
+@media(max-width:800px) { .ws-sheet-scroll { max-height:calc(100dvh - 310px); }.ws-sales-sheet .ws-page-heading p { max-width:350px; } }

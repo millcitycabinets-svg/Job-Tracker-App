@@ -14,7 +14,7 @@ const FIELDS = {
 };
 const count = value => Number.isFinite(Number(value)) ? Number(value).toLocaleString("en-US") : "—";
 
-export default function CsvImport({ me, context, onClose, onImported }) {
+export default function CsvImport({ initialFile, me, context, onClose, onImported }) {
   const [file, setFile] = useState(null);
   const [mapping, setMapping] = useState({});
   const [manualMapping, setManualMapping] = useState(false);
@@ -55,6 +55,8 @@ export default function CsvImport({ me, context, onClose, onImported }) {
     } catch (err) { if (requestNumber === operation.current) setError(err.message); }
     finally { if (requestNumber === operation.current) setPhase(""); }
   };
+
+  useEffect(() => { if (initialFile) { setFile(initialFile); requestPreview(initialFile, {}); } }, []);
 
   const chooseFile = event => {
     const selected = event.target.files?.[0];
@@ -128,9 +130,9 @@ export default function CsvImport({ me, context, onClose, onImported }) {
           <Field label="Add contacts to"><select value={visibility} disabled={busy} onChange={updateSetting(setVisibility)}><option value="private">Personal leads</option><option value="shared">Shared lead pool</option></select></Field>
           {me.role === "owner" && <Field label="Sales owner"><select value={ownerId} disabled={busy} onChange={updateSetting(setOwnerId)}>{users.map(user => <option key={user.id} value={user.id}>{user.name}</option>)}</select></Field>}
         </div>
-        <div className="csv-file-section">
+        <div className="csv-file-section" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); e.stopPropagation(); if (!busy) chooseFile({ target: { files: e.dataTransfer.files } }); }}>
           <label className="ws-field"><span>CSV file</span><input type="file" accept=".csv,text/csv" disabled={busy} onChange={chooseFile} aria-describedby="csv-file-help" /></label>
-          <span id="csv-file-help" className="csv-file-help">Up to 5 MiB and 5,000 rows. Headers are matched automatically.</span>
+          <span id="csv-file-help" className="csv-file-help">Drop a CSV here or choose a file. Up to 5 MiB and 5,000 rows. Headers are matched automatically.</span>
           {file && <div className="csv-file-label"><span>{file.name}</span><span>{Math.max(1, Math.round(file.size / 1024)).toLocaleString("en-US")} KiB</span></div>}
         </div>
         <ErrorNotice error={error} />
