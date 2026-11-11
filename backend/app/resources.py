@@ -53,10 +53,15 @@ class TextBubble(BaseModel):
     y: float=Field(ge=0,le=900)
     color: str=Field(pattern=r'^#[0-9a-fA-F]{6}$')
     text: str=Field(max_length=4000)
+class WallScale(BaseModel):
+    model_config=ConfigDict(extra='forbid',allow_inf_nan=False)
+    width_inches: float=Field(ge=12,le=1200)
+    height_inches: float=Field(ge=12,le=1200)
 class MeasurementPage(BaseModel):
     model_config=ConfigDict(extra='forbid')
     id: str=Field(min_length=1,max_length=80)
     title: str=Field(min_length=1,max_length=160)
+    scale: WallScale | None=None
     text: str=Field(default='',max_length=50000)
     strokes: list[Stroke]=Field(default_factory=list,max_length=2000)
     bubbles: list[TextBubble]=Field(default_factory=list,max_length=200)
