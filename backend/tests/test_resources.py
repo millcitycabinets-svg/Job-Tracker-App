@@ -45,3 +45,17 @@ def test_library_upload_roles_paths_download(workspace):
     assert admin.post('/api/workspace/team-files',**args).status_code==422
     args['data']['path']='Guide/unsafe.html'
     assert admin.post('/api/workspace/team-files',**args).status_code==422
+
+
+def test_uuid_notebook_audit_uses_nullable_numeric_row_id(workspace):
+    from sqlalchemy import select
+    from app.models import AuditLog
+    a=workspace.client('rep_a');id=str(uuid4())
+    ok(a.put('/api/workspace/notebooks/'+id,json=payload()))
+    ok(a.put('/api/workspace/notebooks/'+id,json=payload(title='Revision two',revision=1)))
+    with workspace.session() as db:
+        entries=list(db.scalars(select(AuditLog).where(AuditLog.table_name=='workspace_notebooks').order_by(AuditLog.id)))
+        assert [e.action for e in entries]==['create','update']
+        assert all(e.row_id is None for e in entries)
+        assert entries[0].changes['id'][1]==id
+        assert entries[1].changes['revision']==[1,2]

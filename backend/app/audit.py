@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from .models import AuditLog, Base
 
-SECRET_FIELDS = {"password_hash", "encrypted_token"}
+SECRET_FIELDS = {"password_hash", "encrypted_token", "secret", "encrypted_subscription"}
 
 
 def _plain(value):
@@ -53,7 +53,7 @@ def _write_audit(session, flush_context):
                 k: (["***", "***"] if k in SECRET_FIELDS else [_plain(old), _plain(new)]) for k, (old, new) in changes.items()
             }
             rows.append(
-                {"user_id": user_id, "table_name": obj.__tablename__, "row_id": getattr(obj, "id", None),
+                {"user_id": user_id, "table_name": obj.__tablename__, "row_id": getattr(obj, "id", None) if isinstance(getattr(obj, "id", None), int) else None,
                  "action": action, "changes": changes}
             )
     if rows:

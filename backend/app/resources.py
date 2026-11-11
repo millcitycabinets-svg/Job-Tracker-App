@@ -11,7 +11,7 @@ from sqlalchemy import String, Text, JSON, LargeBinary, ForeignKey, DateTime, se
 from sqlalchemy.orm import Mapped, mapped_column, Session
 from sqlalchemy.exc import IntegrityError
 from .db import Base, get_db
-from .models import User, Job, now
+from .models import User, Job, AuditLog, now
 from .auth import current_user
 from .workspace_models import Opportunity, WorkRequest
 from .workspace import _role, WORKSPACE, _read_opportunity, _edit_opportunity
@@ -127,6 +127,7 @@ def save_notebook(id:UUID,body:NoteIn,db:Session=Depends(get_db),user:User=Depen
             raise HTTPException(409,'A newer version exists. Your device draft is retained. Export it before reopening the saved version.')
         result=db.execute(update(Notebook).where(Notebook.id==str(id),Notebook.revision==body.revision).values(title=body.title,content=content,opportunity_id=body.opportunity_id,job_id=body.job_id,revision=body.revision+1,updated_at=now()))
         if not result.rowcount:raise HTTPException(409,'This notebook changed on another device. Your local draft is retained.')
+        db.add(AuditLog(user_id=user.id,table_name='workspace_notebooks',row_id=None,action='update',changes={'id':[str(id),str(id)],'revision':[body.revision,body.revision+1]}))
     else:
         if body.revision!=0:raise HTTPException(409,'Notebook is unavailable. Your device draft is retained.')
         link_access(db,user,body.opportunity_id,body.job_id,True)
