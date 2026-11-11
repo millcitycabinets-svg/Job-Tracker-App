@@ -8,7 +8,7 @@ My notes & drawings holds each author's notebooks. Creating one inside an opport
 
 Notes store editable stroke coordinates and typed measurements. Autosave runs every 1.5 seconds after edits, with a per-account IndexedDB device draft written on each completed stroke/change. Server revision checks stop competing-device overwrites; identical retries are idempotent. Unsynced device drafts are listed on reopen and retry when connected. Local drafts are not a substitute for a hosted save: browser storage can be cleared, evicted, or unavailable. The app shell itself is not offline-cached; open the page before losing connectivity. Never claim loss-proof storage. Pencil/mouse mode ignores touch strokes; finger drawing can be enabled explicitly. PNG and JSON backup export are available. The author should confirm Saved to workspace before closing or clearing browser data. No destructive notebook delete is exposed.
 
-Migration 0015 is additive. Limits are two megabytes of notebook content, 2,000 strokes/page, and 20,000 points/stroke. Large drawings should use a new notebook/page.
+Migration 0015 introduced notebooks; 0017 adds private review recordings. Notebook limits are 12 MB of content, 30 pages, 2,000 strokes/page, 200 text bubbles/page, and 20,000 points/stroke. Large drawings should use a new notebook/page.
 
 ## Embedded customer tools
 
@@ -19,3 +19,13 @@ The workspace issues a random eight-hour capability, stores only its SHA-256 dig
 The token enters the tool through a URL fragment, is removed immediately, stays in memory, and is sent only to same-origin portal API routes. The portal verifies it server-to-server with the fixed workspace origin. A narrowly scoped HttpOnly cookie allows designer assets to load; customer API calls still require the in-memory token. Embedded draft storage is scoped to the workspace user and job. Only the workspace origin is added to the designer's frame-ancestor allowance; the original standalone designer protection is unchanged.
 
 Users must use the existing Save / Save to job controls before closing. Closing warns about unsaved work. This is not an automatic import of historical portal projects, an offline app, or bidirectional synchronization of later contact edits. Customer details populate the linked estimate on first open and subsequent launches preserve saved estimate data.
+
+## iPad measurement pages and review recordings
+
+Legacy drawings and notes open as Page 1 without losing their content. Version 2 notebooks have numbered, renameable pages searchable by label, page notes, or bubble text. Old clients cannot overwrite a version 2 notebook. Each page has independent strokes and colored text bubbles. Choose Place text note, tap the drawing, and enter text using the iPad keyboard microphone for dictation. No browser speech API or external transcription service is used.
+
+Notebook selections cover cabinet color/finish, door style, assembly, delivery, installation, ceiling height, upper cabinet finish, and scope notes. Dropdowns allow a custom value on the notebook; selections remain editable. Customer review notes are explicitly editable notes, not a transcript or verified customer approval.
+
+Review recording requires an explicit consent checkbox and Start action. Keep the iPad unlocked and the app visible. Hiding the app stops recording; each part stops at 20 minutes. MediaRecorder format is feature-detected (MP4 preferred), and original audio can also be uploaded from Voice Memos (M4A/MP4, WebM, Ogg). Audio is stored in PostgreSQL with the notebook's permissions, immutable by recording ID, with authenticated byte-range playback. Limits: 25 MB/file, 100 MB/notebook. No audio is sent to transcription providers.
+
+Recording chunks are cached every 15 seconds in per-user/per-notebook device storage and retried after failed uploads. Device drafts can be downloaded before leaving. Device/browser termination may lose the current unfinished chunk; never promise uninterrupted background recording or loss-proof storage. Save confirmation requires a successful server upload. On storage failure the in-memory recording must be downloaded before closing. Test on a physical iPad with Apple Pencil and microphone before field use; desktop pointer and synthetic audio checks do not validate iPad hardware.

@@ -6,7 +6,7 @@ from urllib.parse import quote
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from fastapi.responses import Response
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 from sqlalchemy import String, Text, JSON, LargeBinary, ForeignKey, DateTime, select, or_, func, update
 from sqlalchemy.orm import Mapped, mapped_column, Session
 from sqlalchemy.exc import IntegrityError
@@ -46,9 +46,46 @@ class Stroke(BaseModel):
     color: str=Field(pattern=r'^#[0-9a-fA-F]{6}$')
     width: float=Field(ge=1,le=12)
     points: list[Point]=Field(max_length=20000)
-class Content(BaseModel):
+class TextBubble(BaseModel):
+    model_config=ConfigDict(extra='forbid',allow_inf_nan=False)
+    id: str=Field(min_length=1,max_length=80)
+    x: float=Field(ge=0,le=1200)
+    y: float=Field(ge=0,le=900)
+    color: str=Field(pattern=r'^#[0-9a-fA-F]{6}$')
+    text: str=Field(max_length=4000)
+class MeasurementPage(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    id: str=Field(min_length=1,max_length=80)
+    title: str=Field(min_length=1,max_length=160)
     text: str=Field(default='',max_length=50000)
     strokes: list[Stroke]=Field(default_factory=list,max_length=2000)
+    bubbles: list[TextBubble]=Field(default_factory=list,max_length=200)
+class Measurements(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    color: str=Field(default='',max_length=200)
+    door_style: str=Field(default='',max_length=200)
+    assembly: str=Field(default='To confirm',max_length=200)
+    delivery: str=Field(default='To confirm',max_length=200)
+    install: str=Field(default='To confirm',max_length=200)
+    ceiling_height: str=Field(default='',max_length=200)
+    upper_finish: str=Field(default='',max_length=200)
+    scope_notes: str=Field(default='',max_length=10000)
+class Content(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    # Legacy single-page payloads remain readable; new clients preserve them as page 1.
+    text: str=Field(default='',max_length=50000)
+    strokes: list[Stroke]=Field(default_factory=list,max_length=2000)
+    version: int=Field(default=1,ge=1,le=2)
+    pages: list[MeasurementPage]=Field(default_factory=list,max_length=30)
+    measurements: Measurements=Field(default_factory=Measurements)
+    review_notes: str=Field(default='',max_length=50000)
+    @model_validator(mode='after')
+    def unique_pages(self):
+        if len({p.id for p in self.pages})!=len(self.pages):raise ValueError('Page IDs must be unique.')
+        if self.version==2 and not self.pages:raise ValueError('A notebook needs at least one page.')
+        for p in self.pages:
+            if len({b.id for b in p.bubbles})!=len(p.bubbles):raise ValueError('Text note IDs must be unique.')
+        return self
 class NoteIn(BaseModel):
     model_config=ConfigDict(extra='forbid')
     title: str=Field(min_length=1,max_length=200)
@@ -114,11 +151,12 @@ def notebook(id:UUID,db:Session=Depends(get_db),user:User=Depends(current_user))
 @router.put('/notebooks/{id}')
 def save_notebook(id:UUID,body:NoteIn,db:Session=Depends(get_db),user:User=Depends(current_user)):
     _role(user,WORKSPACE)
-    content=body.content.model_dump()
-    if len(json.dumps(content).encode())>2_000_000:raise HTTPException(422,'This drawing is full. Start a new page.')
+    content=body.content.model_dump() if body.content.version==2 else {"text":body.content.text,"strokes":[s.model_dump() for s in body.content.strokes]}
+    if len(json.dumps(content).encode())>12_000_000:raise HTTPException(422,'This notebook is full. Start another notebook for this job.')
     row=db.get(Notebook,str(id))
     if row:
         note_access(db,user,row,True)
+        if row.content.get('version',1)==2 and content.get('version',1)<2:raise HTTPException(409,'This notebook has multiple pages. Refresh the app before editing; your draft is retained.')
         # Assignment is explicit and checked separately from editing an existing page.
         if (body.opportunity_id,body.job_id)!=(row.opportunity_id,row.job_id):link_access(db,user,body.opportunity_id,body.job_id,True)
         if row.revision!=body.revision:

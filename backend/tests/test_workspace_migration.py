@@ -48,7 +48,7 @@ assert {'workspace_opportunities', 'workspace_requests', 'workspace_commands', '
         'workspace_contact_imports', 'workspace_contact_import_rows', 'workspace_contact_import_lock',
         'workspace_monday_sources', 'workspace_mailboxes', 'workspace_communications', 'workspace_campaigns', 'workspace_oauth_attempts', 'workspace_contact_permissions'} <= tables
 with engine.connect() as conn:
-    assert conn.scalar(text('SELECT version_num FROM alembic_version')) == '0016'
+    assert conn.scalar(text('SELECT version_num FROM alembic_version')) == '0017'
     assert tuple(conn.execute(text('SELECT name, stage, operations_stage, operations_revision FROM workspace_opportunities WHERE id=1')).one()) == ('Existing won opportunity', 'Won', 'Prepping', 1)
     assert conn.scalar(text('SELECT COUNT(*) FROM workspace_requests WHERE opportunity_id=1')) == 1
     assert conn.scalar(text('SELECT body FROM workspace_activities WHERE opportunity_id=1')) == 'Preserve this design history'
@@ -126,7 +126,7 @@ with engine.connect() as conn:
     cfg.attributes['connection'] = conn
     command.upgrade(cfg, 'head')
     assert transaction.is_active and conn.in_transaction(), 'Alembic ended the caller transaction'
-    assert conn.scalar(text('SELECT version_num FROM alembic_version')) == '0016'
+    assert conn.scalar(text('SELECT version_num FROM alembic_version')) == '0017'
     assert 'workspace_contact_imports' in inspect(conn).get_table_names()
     assert 'workspace_monday_sources' in inspect(conn).get_table_names()
     transaction.rollback()
@@ -140,7 +140,7 @@ with engine.begin() as conn:
     cfg.attributes['connection'] = conn
     command.upgrade(cfg, 'head')
 with engine.connect() as conn:
-    assert conn.scalar(text('SELECT version_num FROM alembic_version')) == '0016'
+    assert conn.scalar(text('SELECT version_num FROM alembic_version')) == '0017'
     assert conn.scalar(text('SELECT COUNT(*) FROM workspace_contact_import_lock')) == 1
 '''
     env = {**os.environ, "DATABASE_URL": f"sqlite:///{tmp_path / 'rollback.sqlite'}", "PYTHONPATH": str(backend)}
