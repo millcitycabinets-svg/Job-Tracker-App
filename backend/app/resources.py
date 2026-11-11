@@ -62,6 +62,8 @@ class MeasurementPage(BaseModel):
     bubbles: list[TextBubble]=Field(default_factory=list,max_length=200)
 class Measurements(BaseModel):
     model_config=ConfigDict(extra='forbid')
+    cabinet_selection: str | None=Field(default=None,max_length=200)
+    service_package: str=Field(default='',max_length=200)
     color: str=Field(default='',max_length=200)
     door_style: str=Field(default='',max_length=200)
     assembly: str=Field(default='To confirm',max_length=200)
