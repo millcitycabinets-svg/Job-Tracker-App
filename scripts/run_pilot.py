@@ -30,7 +30,7 @@ def main():
     os.environ.pop("INTAKE_TOKEN", None)
     # A local demo must never inherit real mail or phone credentials.
     for key in list(os.environ):
-        if key.startswith(("GOOGLE_", "TWILIO_", "RESEND_", "COMMUNICATIONS_", "CAMPAIGN_")):
+        if key.startswith(("WEBSITE_", "GOOGLE_", "TWILIO_", "RESEND_", "COMMUNICATIONS_", "CAMPAIGN_")):
             os.environ.pop(key, None)
     sys.path.insert(0, str(ROOT / "backend"))
     from app import migrate

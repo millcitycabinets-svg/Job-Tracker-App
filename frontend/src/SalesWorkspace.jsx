@@ -10,7 +10,9 @@ export function SalesPage(props) {
   const [page, setPage] = useState(1), [pageSize, setPageSize] = useState(250), [sort, setSort] = useState({ key: "", direction: 1 }), [dropFile, setDropFile] = useState(null);
   const [search, setSearch] = useState(""), [term, setTerm] = useState(""), [stage, setStage] = useState(""), [creating, setCreating] = useState(false), [importing, setImporting] = useState(false), [selected, setSelected] = useState(null);
   useEffect(() => { const timer = setTimeout(() => setTerm(search), 180); return () => clearTimeout(timer); }, [search]);
-  const { data, error, loading } = useResource(`/opportunities?scope=${scope}&search=${encodeURIComponent(term)}${stage ? `&stage=${encodeURIComponent(stage)}` : ""}`, version);
+  const [poolRefresh, setPoolRefresh] = useState(0);
+  useEffect(() => { if (scope !== "shared") return; const timer = setInterval(() => setPoolRefresh(n => n + 1), 60000); return () => clearInterval(timer); }, [scope]);
+  const { data, error, loading } = useResource(`/opportunities?scope=${scope}&search=${encodeURIComponent(term)}${stage ? `&stage=${encodeURIComponent(stage)}` : ""}`, `${version}:${poolRefresh}`);
   const rows = useMemo(() => {
     const result = [...(data || [])];
     if (sort.key) result.sort((a, b) => (sort.key === "amount" ? Number(a.amount || 0) - Number(b.amount || 0) : String(a[sort.key === "owner" ? "owner_name" : sort.key] || "").localeCompare(String(b[sort.key === "owner" ? "owner_name" : sort.key] || ""), undefined, { numeric: true, sensitivity: "base" })) * sort.direction || a.id - b.id);

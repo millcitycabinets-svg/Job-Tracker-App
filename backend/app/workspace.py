@@ -337,7 +337,7 @@ def opportunities(scope: Literal["mine", "shared", "all"] = "mine", search: str 
     _role(user, SALES)
     q = select(Opportunity).where(_sales_filter(user)).options(selectinload(Opportunity.owner))
     if scope == "mine":
-        q = q.where(Opportunity.owner_id == user.id)
+        q = q.where(Opportunity.owner_id == user.id, Opportunity.visibility != "shared")
     elif scope == "shared":
         q = q.where(Opportunity.visibility == "shared")
     if stage:
@@ -633,7 +633,7 @@ def dashboard(db: Session = Depends(get_db), user: User = Depends(current_user))
     if user.role in SALES:
         q = select(Opportunity)
         if user.role == "rep":
-            q = q.where(Opportunity.owner_id == user.id)
+            q = q.where(Opportunity.owner_id == user.id, Opportunity.visibility != "shared")
         opps = list(db.scalars(q))
     pipeline = [o for o in opps if o.stage not in ("Won", "Lost")]
     by_stage = [{"stage": stage, "count": len([o for o in pipeline if o.stage == stage]),

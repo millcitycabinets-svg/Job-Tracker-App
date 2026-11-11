@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import hmac
 import os
 import re
@@ -17,7 +19,7 @@ from sqlalchemy.orm import Session, selectinload
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import audit, inbox, migrate  # noqa: F401  (audit registers its listener)
-from . import communications, communication_models
+from . import communications, communication_models, website_leads
 from . import workspace, workspace_models  # noqa: F401 (registers additive workspace tables)
 from . import contact_imports, contact_import_models, monday_import  # noqa: F401
 from .auth import check_password, current_user, hash_password, owner_only, require, session_fingerprint
@@ -30,7 +32,14 @@ from .waterfall import compute, labor_total, money
 @asynccontextmanager
 async def lifespan(_app):
     migrate.upgrade()
-    yield
+    task = asyncio.create_task(website_leads.run()) if os.environ.get("WEBSITE_FEED_TOKEN") and os.environ.get("WORKSPACE_ENVIRONMENT") != "local-pilot" else None
+    try:
+        yield
+    finally:
+        if task:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 HTTPS_ONLY = os.environ.get("HTTPS_ONLY", "0") == "1"
