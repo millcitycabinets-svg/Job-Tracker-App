@@ -126,3 +126,11 @@ fieldset { border:0; padding:0; margin:0; min-width:0; }
 .ws-sheet-pagination label { display:flex; align-items:center; gap:5px; }
 .ws-sheet-pagination select, .ws-sheet-pagination button { min-height:28px; padding:3px 7px; font-size:11px; }
 @media(max-width:800px) { .ws-sheet-scroll { max-height:calc(100dvh - 310px); }.ws-sales-sheet .ws-page-heading p { max-width:350px; } }
+@media(min-width:801px) {
+  .workspace-main:has(.ws-sales-sheet) { padding:16px 24px; }
+  .ws-sales-sheet { height:calc(100dvh - 108px); gap:8px; }
+  .workspace-shell:has(.ws-pilot-banner) .ws-sales-sheet { height:calc(100dvh - 138px); }
+  .ws-sheet-container { display:flex; flex-direction:column; flex:1; min-height:160px; }
+  .ws-sheet-scroll { flex:1; min-height:0; max-height:none; }
+  .ws-sheet-pagination { flex:none; }
+}
