@@ -715,3 +715,15 @@ def put_preferences(body: PreferencesIn, db: Session = Depends(get_db), user: Us
     pref.settings = {**pref.settings, **changes}
     pref.updated_at = now()
     return _commit(db, pref.settings)
+
+
+@router.get("/website-lead-alerts")
+def website_lead_alerts(db: Session = Depends(get_db), user: User = Depends(current_user)):
+    """Team-wide actionable alerts; claimed leads disappear for everyone."""
+    _role(user, SALES)
+    from .website_leads import WebsiteLeadReceipt
+    criteria = (Opportunity.visibility == "shared", Opportunity.stage.notin_(("Won", "Lost")))
+    base = select(Opportunity).join(WebsiteLeadReceipt, WebsiteLeadReceipt.opportunity_id == Opportunity.id).where(*criteria)
+    count = db.scalar(select(func.count()).select_from(base.subquery()))
+    rows = db.scalars(base.order_by(WebsiteLeadReceipt.source_sequence.desc()).limit(5))
+    return {"count": count, "items": [{"id": row.id, "name": row.name} for row in rows]}

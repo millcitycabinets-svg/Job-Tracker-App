@@ -16,3 +16,7 @@ The additive migration 0013 creates workspace_website_leads. Do not delete recei
 ## Verification
 
 Backend suite: 145 passed. Website suite: 14 passed, TypeScript check and production build passed. Workspace production build passed. Published website feed rejects anonymous requests (401) and accepts the configured token (200). Final hosted import verification requires the matching encrypted setting and an approved test inquiry.
+
+## Sales team notifications
+
+A persistent in-app notice appears across the workspace for salespeople and administrators while website inquiries remain unclaimed. It checks every 30 seconds and on window focus. View inquiries opens the latest five leads directly for claiming; larger queues link to the shared pool. Claimed, Won, and Lost leads are excluded, and other roles cannot access the alert endpoint. Existing unclaimed inquiries appear on sign-in, so alerts do not depend on catching a brief toast. These are in-app notices, not background push, email, or SMS notifications when the app is closed.

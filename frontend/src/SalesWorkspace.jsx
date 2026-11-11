@@ -42,7 +42,7 @@ function CreateLead({ me, context, onClose, onCreated }) {
   return <Modal title="New sales lead" onClose={onClose}><form onSubmit={submit} className="ws-form"><LeadFields form={form} setForm={setForm} creating me={me} context={context} />{["Design", "Estimate"].includes(form.stage) && <div className="ws-hint">This stage adds a {form.stage.toLowerCase()} request to the operations queue immediately.</div>}<ErrorNotice error={error} /><div className="ws-form-actions"><button className="secondary" type="button" onClick={onClose}>Cancel</button><button disabled={busy}>{busy ? "Adding…" : "Add lead"}</button></div></form></Modal>;
 }
 
-function OpportunityDrawer({ id, me, context, refresh, notify, onClose }) {
+export function OpportunityDrawer({ id, me, context, refresh, notify, onClose }) {
   const [record, setRecord] = useState(null), [form, setForm] = useState(null), [error, setError] = useState(""), [busy, setBusy] = useState(false), [activity, setActivity] = useState(""), [activityKind, setActivityKind] = useState("Note"), [linkId, setLinkId] = useState("");
   const { data: jobs } = useResource("/tracker-jobs");
   const load = async (resetForm = true) => { const row = await wsApi(`/opportunities/${id}`); setRecord(row); if (resetForm) setForm(initialForm(row)); return row; };

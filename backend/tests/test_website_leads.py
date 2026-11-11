@@ -35,3 +35,16 @@ def test_invalid_page_does_not_partially_advance(workspace):
     valid=item();invalid=item(2);invalid['data']['id']=str(uuid4())
     with pytest.raises(ValueError):w.ingest([valid,invalid],workspace.session)
     assert w.cursor(workspace.session)=={'after':0}
+
+def test_website_alerts_only_sales_and_unclaimed_website_inquiries(workspace):
+    data=item()
+    w.ingest([data],workspace.session)
+    a=workspace.client('rep_a'); b=workspace.client('rep_b')
+    alerts=ok(a.get('/api/workspace/website-lead-alerts'))
+    assert alerts['count']==1 and len(alerts['items'])==1
+    assert ok(b.get('/api/workspace/website-lead-alerts'))==alerts
+    assert workspace.client('designer').get('/api/workspace/website-lead-alerts').status_code==403
+    id=alerts['items'][0]['id']
+    row=ok(a.get(f'/api/workspace/opportunities/{id}'))
+    ok(a.post(f'/api/workspace/opportunities/{id}/claim',json=command(row['revision'])))
+    assert ok(b.get('/api/workspace/website-lead-alerts'))=={'count':0,'items':[]}
