@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session, selectinload
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import audit, inbox, migrate  # noqa: F401  (audit registers its listener)
-from . import communications, communication_models, website_leads, push_notifications, resources
+from . import communications, communication_models, website_leads, push_notifications, resources, embedded_tools
 from . import workspace, workspace_models  # noqa: F401 (registers additive workspace tables)
 from . import contact_imports, contact_import_models, monday_import  # noqa: F401
 from .auth import check_password, current_user, hash_password, owner_only, require, session_fingerprint
@@ -113,6 +113,10 @@ def login(body: LoginIn, request: Request, db: Session = Depends(get_db)):
 def logout(request: Request, db: Session = Depends(get_db)):
     if request.headers.get("X-Workspace-User") is not None:
         current_user(request, db)
+    if request.session.get("user_id"):
+        from sqlalchemy import delete
+        db.execute(delete(embedded_tools.ToolGrant).where(embedded_tools.ToolGrant.user_id==request.session["user_id"]))
+        db.commit()
     request.session.clear()
     return {"ok": True}
 
@@ -1613,6 +1617,7 @@ def audit_log(table: str | None = None, row_id: int | None = None, limit: int = 
 
 app.include_router(workspace.router)
 app.include_router(resources.router)
+app.include_router(embedded_tools.router)
 app.include_router(push_notifications.router)
 app.include_router(communications.router)
 app.include_router(contact_imports.router)
