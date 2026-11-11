@@ -11,3 +11,4 @@ cryptography==46.0.7
 httpx==0.28.1
 twilio==9.13.0
 svix==1.99.1
+pywebpush==2.0.3

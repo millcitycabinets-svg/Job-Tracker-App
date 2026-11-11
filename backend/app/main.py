@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session, selectinload
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import audit, inbox, migrate  # noqa: F401  (audit registers its listener)
-from . import communications, communication_models, website_leads
+from . import communications, communication_models, website_leads, push_notifications
 from . import workspace, workspace_models  # noqa: F401 (registers additive workspace tables)
 from . import contact_imports, contact_import_models, monday_import  # noqa: F401
 from .auth import check_password, current_user, hash_password, owner_only, require, session_fingerprint
@@ -33,9 +33,14 @@ from .waterfall import compute, labor_total, money
 async def lifespan(_app):
     migrate.upgrade()
     task = asyncio.create_task(website_leads.run()) if os.environ.get("WEBSITE_FEED_TOKEN") and os.environ.get("WORKSPACE_ENVIRONMENT") != "local-pilot" else None
+    push_task = asyncio.create_task(push_notifications.run()) if os.environ.get("WORKSPACE_ENVIRONMENT") != "local-pilot" else None
     try:
         yield
     finally:
+        if push_task:
+            push_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await push_task
         if task:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -1607,6 +1612,7 @@ def audit_log(table: str | None = None, row_id: int | None = None, limit: int = 
 # ---------- frontend ----------
 
 app.include_router(workspace.router)
+app.include_router(push_notifications.router)
 app.include_router(communications.router)
 app.include_router(contact_imports.router)
 

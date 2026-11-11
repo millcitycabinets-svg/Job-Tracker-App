@@ -142,3 +142,9 @@ fieldset { border:0; padding:0; margin:0; min-width:0; }
 .ws-lead-alert-list { display:grid; gap:8px; margin-top:12px; }
 .ws-lead-alert-list button { display:flex; justify-content:space-between; gap:12px; text-align:left; }
 @media(max-width:700px) { .ws-lead-alert { margin:12px 16px 0; } .ws-lead-alert-row { align-items:flex-start; flex-direction:column; } }
+.ws-phone-alerts { position:relative; margin-left:12px; }
+.ws-phone-alerts > button { font-size:12px; white-space:nowrap; }
+.ws-phone-alerts section { position:absolute; top:45px; right:0; z-index:65; width:min(340px,calc(100vw - 32px)); padding:18px; background:#fff; color:#24342c; border:1px solid #cad4c4; border-radius:10px; box-shadow:0 10px 30px #0002; font-size:13px; }
+.ws-phone-alerts section p { line-height:1.5; }
+.ws-phone-alerts section button { margin:4px 4px 4px 0; }
+@media(max-width:600px) { .ws-phone-alerts { margin-left:auto; } .ws-topbar .ws-date { display:none; } }

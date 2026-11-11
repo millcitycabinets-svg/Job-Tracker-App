@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, onSessionInvalidated } from "./api.js";
+import PhoneAlerts, { disablePhoneAlerts } from "./PhoneAlerts.jsx";
 import WebsiteLeadAlerts from "./WebsiteLeadAlerts.jsx";
 import logo from "./logo.png";
 import LegacyJobTracker from "./JobTracker.jsx";
@@ -50,6 +51,7 @@ export default function App() {
     try {
       // Invalidate queued work, then let any dispatched write settle before cookies change.
       await prefQueue.current.catch(() => {});
+      await disablePhoneAlerts().catch(() => {});
       await api("/logout", { method: "POST" });
       prefRef.current = {}; prefQueue.current = Promise.resolve();
       setMe(null); setContext(null); setPreferences({}); setNotice("");
@@ -63,13 +65,13 @@ export default function App() {
   const nav = [["home", "Home", "◫"], ...(caps.sales ? [["sales", "Sales", "↗"]] : []), ...(caps.operations || me.role === "owner" ? [["operations", "Operations", "▤"]] : []), ["tracker", "Job Tracker", "▦"], ...(caps.sales ? [["communications", "Communications", "◌"]] : []), ["tools", "Tools & resources", "◇"]];
   const props = { me, context, preferences, savePreferences, version, refresh: () => setVersion(v => v + 1), notify: setNotice };
   let page;
-  if (current === "sales" && caps.sales) page = <SalesPage {...props} />;
+  if (current === "sales" && caps.sales) page = <SalesPage {...props} path={path} />;
   else if (current === "operations" && (caps.operations || me.role === "owner")) page = <OperationsPage {...props} />;
   else if (current === "tracker") page = <TrackerPage {...props} path={path.replace(/^\/tracker/, "") || "/"} />;
   else if (current === "communications" && caps.sales) page = <CommunicationsPage context={context} me={me} />;
   else if (current === "tools") page = <ToolsPage />;
   else page = <HomePage {...props} />;
-  return <div className="workspace-shell"><aside className={`ws-sidebar ${mobileNav ? "is-open" : ""}`}><a className="ws-brand" href="#/"><img src={logo} alt="Mill City Cabinetry" /><span>Mill City<span>TEAM WORKSPACE</span></span></a><div className="ws-sidebar-label">WORKSPACE</div><nav aria-label="Main navigation">{nav.map(([key, label, icon]) => <a key={key} onClick={() => setMobileNav(false)} className={current === key ? "active" : ""} href={key === "home" ? "#/" : `#/${key}`}><span aria-hidden="true">{icon}</span>{label}{key === "communications" && context.channels?.some(c => c.status !== "connected") && <i className="ws-nav-dot" />}</a>)}</nav><div className="ws-sidebar-foot"><div className="ws-avatar">{initials(me.name)}</div><div><strong>{me.name}</strong><span>{({ owner: "Administrator", rep: "Sales", designer: "Design team", operations: "Operations" })[me.role] || me.role}</span></div><button className="ws-signout" onClick={logout} aria-label="Log out" title="Log out">↪</button></div></aside><div className="ws-content"><header className="ws-topbar"><button className="ws-menu-button" onClick={() => setMobileNav(!mobileNav)} aria-label="Toggle navigation">☰</button><div className="ws-breadcrumb">Mill City <span>/</span><strong>{nav.find(n => n[0] === current)?.[1] || "Home"}</strong></div><span className="ws-date">{new Date().toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}</span><span className="ws-user-badge">{initials(me.name)}</span></header>{context.environment === "local-pilot" && <div className="ws-pilot-banner"><span className="ws-live-dot" />Local pilot · Example records · Separate from your live jobs</div>}{caps.sales && <WebsiteLeadAlerts key={me.id} {...props} />}<main className="workspace-main" key={current}>{page}</main></div>{notice && <div className="ws-toast" role="status">{notice}<button aria-label="Dismiss notification" onClick={() => setNotice("")}>×</button></div>}</div>;
+  return <div className="workspace-shell"><aside className={`ws-sidebar ${mobileNav ? "is-open" : ""}`}><a className="ws-brand" href="#/"><img src={logo} alt="Mill City Cabinetry" /><span>Mill City<span>TEAM WORKSPACE</span></span></a><div className="ws-sidebar-label">WORKSPACE</div><nav aria-label="Main navigation">{nav.map(([key, label, icon]) => <a key={key} onClick={() => setMobileNav(false)} className={current === key ? "active" : ""} href={key === "home" ? "#/" : `#/${key}`}><span aria-hidden="true">{icon}</span>{label}{key === "communications" && context.channels?.some(c => c.status !== "connected") && <i className="ws-nav-dot" />}</a>)}</nav><div className="ws-sidebar-foot"><div className="ws-avatar">{initials(me.name)}</div><div><strong>{me.name}</strong><span>{({ owner: "Administrator", rep: "Sales", designer: "Design team", operations: "Operations" })[me.role] || me.role}</span></div><button className="ws-signout" onClick={logout} aria-label="Log out" title="Log out">↪</button></div></aside><div className="ws-content"><header className="ws-topbar"><button className="ws-menu-button" onClick={() => setMobileNav(!mobileNav)} aria-label="Toggle navigation">☰</button><div className="ws-breadcrumb">Mill City <span>/</span><strong>{nav.find(n => n[0] === current)?.[1] || "Home"}</strong></div><span className="ws-date">{new Date().toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}</span>{caps.sales && <PhoneAlerts key={me.id} me={me} />}<span className="ws-user-badge">{initials(me.name)}</span></header>{context.environment === "local-pilot" && <div className="ws-pilot-banner"><span className="ws-live-dot" />Local pilot · Example records · Separate from your live jobs</div>}{caps.sales && <WebsiteLeadAlerts key={me.id} {...props} />}<main className="workspace-main" key={current}>{page}</main></div>{notice && <div className="ws-toast" role="status">{notice}<button aria-label="Dismiss notification" onClick={() => setNotice("")}>×</button></div>}</div>;
 }
 
 function Login({ onLogin, message }) {
